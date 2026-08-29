@@ -14,13 +14,13 @@ This project listens to your existing Harmony remote and lets you decide what ev
   a picture of the remote, not by memorizing button names.
 - **Works from your phone or a browser** 
 
-<img src="docs/1.jpg" alt="App screenshot 1" style="width: 30%;">
-
-<img src="docs/2.jpg" alt="App screenshot 2" style="width: 30%;">
-
-<img src="docs/3.jpg" alt="App screenshot 3" style="width: 30%;">
-
-<img src="docs/4.jpg" alt="App screenshot 4" style="width: 30%;">
+## App Screenshots
+<div style="display: flex; gap: 8px; flex-wrap: wrap;">
+  <img src="docs/1.jpg" alt="App screenshot 1" style="width: 22%;">
+  <img src="docs/2.jpg" alt="App screenshot 2" style="width: 22%;">
+  <img src="docs/3.jpg" alt="App screenshot 3" style="width: 22%;">
+  <img src="docs/4.jpg" alt="App screenshot 4" style="width: 22%;">
+</div>
 
 ## Running it
 
