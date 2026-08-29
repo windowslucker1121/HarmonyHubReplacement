@@ -624,6 +624,33 @@ void main() {
     expect(find.text('Paused'), findsNothing);
   });
 
+  testWidgets('starting and stopping a scene does not clear the paused banner', (tester) async {
+    // Regression: the local status patch on a "scene" event used to rebuild
+    // HubStatus without carrying `paused` along, silently resetting it to
+    // the constructor's default of false -- so the banner would vanish (and
+    // the Settings toggle would show off) even though the engine itself was
+    // never actually resumed.
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final api = FakeApi()..paused = true;
+    await pumpApp(tester, api);
+    expect(find.text('Paused'), findsOneWidget);
+
+    api.eventController.add(HubEvent(type: 'scene', at: DateTime.now(), scene: 'watch_tv', ok: true));
+    await tester.pump();
+    expect(find.text('Paused'), findsOneWidget);
+
+    api.eventController.add(HubEvent(type: 'scene', at: DateTime.now(), ok: true));
+    await tester.pump();
+    expect(find.text('Paused'), findsOneWidget);
+
+    // The API itself was never asked to resume -- the engine was paused
+    // throughout, only the display was ever wrong.
+    expect(api.paused, isTrue);
+  });
+
   testWidgets('with no global scene set, idle buttons say they do nothing', (tester) async {
     tester.view.physicalSize = const Size(1400, 1000);
     tester.view.devicePixelRatio = 1.0;

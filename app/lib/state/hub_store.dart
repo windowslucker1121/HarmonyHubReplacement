@@ -210,10 +210,12 @@ class HubStore extends ChangeNotifier {
         devices: status!.devices,
         buttonCount: status!.buttonCount,
         hub: status!.hub,
-        // Unrelated to which scene is running -- the focus survives a
-        // switch on the engine side, so the local patch should not drop it
-        // while waiting on the "status" refetch above.
+        // Unrelated to which scene is running -- both survive a scene
+        // switch on the engine side, so the local patch must not drop them
+        // (defaulting `paused` back to false) while waiting on the "status"
+        // refetch above -- HubStatus() defaults it to false when omitted.
         focus: status!.focus,
+        paused: status!.paused,
       );
     }
     notifyListeners();
