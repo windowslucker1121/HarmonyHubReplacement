@@ -1,0 +1,127 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Harmony Receiver: listen (radio 17129BFCB6)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "listen",
+        "--address", "17129BFCB6",
+        "--channel", "62",
+        "--probe-interval", "0",
+        "--allow-ack",
+        "-v"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Harmony Hub: server (radio 17129BFCB6)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "harmony_hub.server",
+      "args": [
+        "--source", "radio",
+        "--address", "17129BFCB6",
+        "--channel", "62",
+        "--allow-ack",
+        "-v"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Harmony Hub: server (replay, no hardware)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "harmony_hub.server",
+      "args": [
+        "--source", "replay",
+        "--replay", "captures/reference/full_remote_sweep.jsonl",
+        "-v"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },    {
+      "name": "Harmony Hub: server (no hardware)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "harmony_hub.server",
+      "args": [
+        "--source", "none",
+        "-v"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Harmony Hub: build web + server (radio 17129BFCB6)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "harmony_hub.server",
+      "preLaunchTask": "flutter: build web",
+      "args": [
+        "--source", "radio",
+        "--address", "17129BFCB6",
+        "--channel", "62",
+        "--allow-ack",
+        "-v"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Harmony Hub: build web + server (no hardware)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "harmony_hub.server",
+      "preLaunchTask": "flutter: build web",
+      "args": [
+        "--source", "none",
+        "-v"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Harmony Deploy: build + push to Pi",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "harmony_deploy.cli",
+      "args": ["push", "pi"],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "subProcess": false
+    },
+    {
+      "name": "Harmony Deploy: build + push to Pi (force)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "harmony_deploy.cli",
+      "args": ["push", "pi", "--force"],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "subProcess": false
+    },
+    {
+      "name": "Flutter: Run app (Chrome)",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart",
+      "cwd": "${workspaceFolder}/app",
+      "args": ["-d", "chrome", "--dart-define=API_BASE=http://localhost:8765"]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Hub (replay) + App (Chrome)",
+      "configurations": ["Harmony Hub: server (replay, no hardware)", "Flutter: Run app (Chrome)"]
+    },
+    {
+      "name": "Hub (radio 17129BFCB6) + App (Chrome)",
+      "configurations": ["Harmony Hub: server (radio 17129BFCB6)", "Flutter: Run app (Chrome)"]
+    }
+  ]
+}

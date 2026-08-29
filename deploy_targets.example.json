@@ -1,0 +1,6 @@
+{
+  "pi": {
+    "url": "http://harmony.local:8765",
+    "token_file": "~/.harmony/pi.token"
+  }
+}
