@@ -1,0 +1,290 @@
+{
+  "0": {
+    "label": "0",
+    "signatures": [
+      "C1002700"
+    ]
+  },
+  "1": {
+    "label": "1",
+    "signatures": [
+      "C1001E00"
+    ]
+  },
+  "2": {
+    "label": "2",
+    "signatures": [
+      "C1001F00"
+    ]
+  },
+  "3": {
+    "label": "3",
+    "signatures": [
+      "C1002000"
+    ]
+  },
+  "4": {
+    "label": "4",
+    "signatures": [
+      "C1002100"
+    ]
+  },
+  "5": {
+    "label": "5",
+    "signatures": [
+      "C1002200"
+    ]
+  },
+  "6": {
+    "label": "6",
+    "signatures": [
+      "C1002300"
+    ]
+  },
+  "7": {
+    "label": "7",
+    "signatures": [
+      "C1002400"
+    ]
+  },
+  "8": {
+    "label": "8",
+    "signatures": [
+      "C1002500"
+    ]
+  },
+  "9": {
+    "label": "9",
+    "signatures": [
+      "C1002600"
+    ]
+  },
+  "ac_back": {
+    "label": "AC Back",
+    "signatures": [
+      "C3240200"
+    ]
+  },
+  "application_menu_key": {
+    "label": "Application/Menu Key",
+    "signatures": [
+      "C1006500"
+    ]
+  },
+  "channel_down": {
+    "label": "Channel Down",
+    "signatures": [
+      "C39D0000"
+    ]
+  },
+  "channel_up": {
+    "label": "Channel Up",
+    "signatures": [
+      "C39C0000"
+    ]
+  },
+  "colour_blue": {
+    "label": "Blue",
+    "signatures": [
+      "C3F40100"
+    ]
+  },
+  "colour_green": {
+    "label": "Green",
+    "signatures": [
+      "C3F60100"
+    ]
+  },
+  "colour_red": {
+    "label": "Red",
+    "signatures": [
+      "C3F70100"
+    ]
+  },
+  "colour_yellow": {
+    "label": "Yellow",
+    "signatures": [
+      "C3F50100"
+    ]
+  },
+  "consumer_0x01e8": {
+    "label": "Toggle Music Mode",
+    "signatures": [
+      "C3E80100"
+    ]
+  },
+  "consumer_0x01e9": {
+    "label": "Toggle Movie Mode",
+    "signatures": [
+      "C3E90100"
+    ]
+  },
+  "consumer_0x01ec": {
+    "label": "On/Off",
+    "signatures": [
+      "C3EC0100"
+    ]
+  },
+  "consumer_0x01ed": {
+    "label": "Toggle TV Mode",
+    "signatures": [
+      "C3ED0100"
+    ]
+  },
+  "consumer_0x01ff": {
+    "label": "Info",
+    "signatures": [
+      "C3FF0100"
+    ]
+  },
+  "consumer_0x0ff0": {
+    "label": "SmartHome + Button",
+    "signatures": [
+      "C3F00F00"
+    ]
+  },
+  "consumer_0x0ff1": {
+    "label": "SmartHome - Button",
+    "signatures": [
+      "C3F10F00"
+    ]
+  },
+  "consumer_0x0ff2": {
+    "label": "SmartHome Bulb Upper Button",
+    "signatures": [
+      "C3F20F00"
+    ]
+  },
+  "consumer_0x0ff3": {
+    "label": "SmartHome Bulb Lower Button",
+    "signatures": [
+      "C3F30F00"
+    ]
+  },
+  "consumer_0x0ff4": {
+    "label": "SmartHome Socket Upper Button",
+    "signatures": [
+      "C3F40F00"
+    ]
+  },
+  "consumer_0x0ff5": {
+    "label": "SmartHome Socket Lower Button",
+    "signatures": [
+      "C3F50F00"
+    ]
+  },
+  "down_arrow": {
+    "label": "Down Arrow",
+    "signatures": [
+      "C1005100"
+    ]
+  },
+  "enter": {
+    "label": "Enter",
+    "signatures": [
+      "C1002800"
+    ]
+  },
+  "fast_forward": {
+    "label": "Fast Forward",
+    "signatures": [
+      "C3B30000"
+    ]
+  },
+  "keypad": {
+    "label": "Keypad -",
+    "signatures": [
+      "C1005600"
+    ]
+  },
+  "keypad_enter": {
+    "label": "Select",
+    "signatures": [
+      "C1005800"
+    ]
+  },
+  "left_arrow": {
+    "label": "Left Arrow",
+    "signatures": [
+      "C1005000"
+    ]
+  },
+  "media_select_home": {
+    "label": "DVR",
+    "signatures": [
+      "C39A0000"
+    ]
+  },
+  "mute": {
+    "label": "Mute",
+    "signatures": [
+      "C3E20000"
+    ]
+  },
+  "pause": {
+    "label": "Pause",
+    "signatures": [
+      "C3B10000"
+    ]
+  },
+  "play": {
+    "label": "Play",
+    "signatures": [
+      "C3B00000"
+    ]
+  },
+  "program_guide": {
+    "label": "Program Guide",
+    "signatures": [
+      "C38D0000"
+    ]
+  },
+  "quit": {
+    "label": "Quit",
+    "signatures": [
+      "C3940000"
+    ]
+  },
+  "record": {
+    "label": "Record",
+    "signatures": [
+      "C3B20000"
+    ]
+  },
+  "rewind": {
+    "label": "Rewind",
+    "signatures": [
+      "C3B40000"
+    ]
+  },
+  "right_arrow": {
+    "label": "Right Arrow",
+    "signatures": [
+      "C1004F00"
+    ]
+  },
+  "stop": {
+    "label": "Stop",
+    "signatures": [
+      "C3B70000"
+    ]
+  },
+  "up_arrow": {
+    "label": "Up Arrow",
+    "signatures": [
+      "C1005200"
+    ]
+  },
+  "volume_down": {
+    "label": "Volume Down",
+    "signatures": [
+      "C3EA0000"
+    ]
+  },
+  "volume_up": {
+    "label": "Volume Up",
+    "signatures": [
+      "C3E90000"
+    ]
+  }
+}

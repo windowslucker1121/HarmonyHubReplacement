@@ -27,6 +27,26 @@ import 'learn_screen.dart';
 /// The twelve channels a Harmony Hub uses; anything else the hub rejects.
 const List<int> kHarmonyChannels = [5, 8, 14, 17, 32, 35, 41, 44, 62, 65, 71, 74];
 
+const List<String> _kMonthAbbreviations = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', //
+];
+
+/// Renders a hub-supplied UTC timestamp (`created_at` / `installed_at`, ISO
+/// 8601 with a `+00:00` offset) as the device's local time, e.g.
+/// "29 Aug 2026, 14:05". The hub always timestamps in UTC so releases sort
+/// correctly regardless of where the hub lives; converting only happens here,
+/// at the last moment before it reaches a person.
+String _formatTimestamp(String iso) {
+  final parsed = DateTime.tryParse(iso);
+  if (parsed == null) return iso;
+  final local = parsed.toLocal();
+  final day = local.day.toString().padLeft(2, '0');
+  final month = _kMonthAbbreviations[local.month - 1];
+  final hour = local.hour.toString().padLeft(2, '0');
+  final minute = local.minute.toString().padLeft(2, '0');
+  return '$day $month ${local.year}, $hour:$minute';
+}
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -827,7 +847,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           title: Text(version.buildId ?? 'No release installed yet'),
           subtitle: Text([
             if (version.gitSha.isNotEmpty) '${version.gitSha}${version.gitDirty ? ' (dirty)' : ''}',
-            if (version.builtAt != null) 'built ${version.builtAt}',
+            if (version.builtAt != null) 'built ${_formatTimestamp(version.builtAt!)}',
           ].join(' -- ')),
         ),
         if (trial != null)
@@ -884,7 +904,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   color: entry.outcome == 'good' ? Colors.greenAccent : Theme.of(context).colorScheme.error,
                 ),
                 title: Text(entry.buildId),
-                subtitle: Text('${entry.outcome} -- ${entry.installedAt}'),
+                subtitle: Text('${entry.outcome} -- ${_formatTimestamp(entry.installedAt)}'),
               ),
         ],
       ],
