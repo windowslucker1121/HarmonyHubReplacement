@@ -14,6 +14,15 @@ This project listens to your existing Harmony remote and lets you decide what ev
   a picture of the remote, not by memorizing button names.
 - **Works from your phone or a browser** 
 
+## App Screenshots
+![image](docs/1.jpg)
+
+![image](docs/2.jpg)
+
+![image](docs/3.jpg)
+
+![image](docs/4.jpg)
+
 ## Running it
 
 The first time, set everything up:
@@ -146,3 +155,6 @@ recovering from an issue.
   you're not stuck needing a full computer to make a change.
 
 If in doubt, the **Settings** tab is always the place to look first.
+
+Thanks to the following repo, this Project was able to be build:
+https://github.com/joakimjalden/Harmoino
