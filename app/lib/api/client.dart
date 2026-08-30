@@ -168,6 +168,26 @@ class HubApi {
           .toList();
 
   // ----------------------------------------------------------------------
+  // Home Assistant, via MQTT. Everything else about the bridge is an
+  // ordinary settings field, saved through `saveSettings` above like any
+  // other -- only the broker password gets its own routes, for the same
+  // reason the Home Assistant *backend*'s access token does.
+  // ----------------------------------------------------------------------
+
+  Future<MqttStatus> mqttStatus() async =>
+      MqttStatus.fromJson((await _get('/api/mqtt')) as Map<String, dynamic>);
+
+  Future<MqttStatus> setMqttPassword(String password) async => MqttStatus.fromJson(
+      (await _send('PUT', '/api/mqtt/password', {'password': password})) as Map<String, dynamic>);
+
+  Future<MqttStatus> clearMqttPassword() async =>
+      MqttStatus.fromJson((await _send('DELETE', '/api/mqtt/password')) as Map<String, dynamic>);
+
+  /// Forces a fresh discovery/state publish, for "I don't see it in Home Assistant".
+  Future<MqttStatus> republishMqtt() async =>
+      MqttStatus.fromJson((await _send('POST', '/api/mqtt/republish')) as Map<String, dynamic>);
+
+  // ----------------------------------------------------------------------
   // Finding the remote's address. A minute-long handshake, so it is a job
   // that gets polled rather than a request that gets answered.
   // ----------------------------------------------------------------------

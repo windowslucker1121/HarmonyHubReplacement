@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from . import backends
 from . import settings as settings_module
+from .bridge import credentials as mqtt_credentials
 from .diagnostics import Check, run_checks, try_settings
 from .discovery import (
     DEFAULT_SNIFF_TIMEOUT,
@@ -188,6 +189,22 @@ class PairFinishRequest(BaseModel):
     code: str
 
 
+class MqttStatusInfo(BaseModel):
+    """What the Settings screen's Home Assistant card renders."""
+
+    enabled: bool
+    connected: bool
+    detail: str
+    #: Whether a broker password is on file -- never the password itself.
+    #: Mirrors the same "is there a secret, not what it is" shape the Home
+    #: Assistant *backend*'s pairing status already uses.
+    has_password: bool
+
+
+class MqttPasswordRequest(BaseModel):
+    password: str = Field(min_length=1)
+
+
 class SimulateRequest(BaseModel):
     kind: str = "press"
 
@@ -318,6 +335,12 @@ def create_app(
         else:
             logger.info("Autostart is off; the hub is waiting to be started from Settings")
 
+        # Independent of the hub above -- see `bridge.MqttBridge`'s
+        # docstring for why it starts even if the hub itself is `failed` or
+        # stopped: that state is exactly what Home Assistant should be able
+        # to see. `start()` never raises, the same contract as `runtime.start()`.
+        runtime.mqtt_bridge.start()
+
         # Reaching this point *is* the health signal a trial release needs
         # to confirm: the ASGI lifespan has completed startup without
         # raising, which `HubRuntime.start()`'s own contract guarantees
@@ -344,6 +367,7 @@ def create_app(
                     task.cancel()
                     with contextlib.suppress(BaseException):
                         await task
+            await runtime.mqtt_bridge.stop()
             await runtime.stop()
 
     app = FastAPI(title="Harmony Hub", version="0.1.0", lifespan=lifespan)
@@ -385,29 +409,10 @@ def create_app(
     # ------------------------------------------------------------------
 
     async def _device_statuses() -> List[DeviceStatus]:
-        statuses = []
-        for device in runtime.config.devices:
-            backend = runtime.service.engine.backend_for(device.id) if runtime.service else None
-            if backend is None:
-                statuses.append(
-                    DeviceStatus(
-                        id=device.id, name=device.name, backend=device.backend,
-                        running=False, ok=False,
-                        detail="not started" if runtime.service else "the hub is stopped",
-                    )
-                )
-                continue
-            try:
-                health = await backend.health()
-            except Exception as err:
-                health = backends.Health(ok=False, detail=str(err))
-            statuses.append(
-                DeviceStatus(
-                    id=device.id, name=device.name, backend=device.backend,
-                    running=True, ok=health.ok, detail=health.detail,
-                )
-            )
-        return statuses
+        # `HubRuntime.device_statuses` is the shared implementation --
+        # `bridge.MqttBridge` needs the same answer, so it is spelled out
+        # once there rather than twice.
+        return [DeviceStatus(**status) for status in await runtime.device_statuses()]
 
     def _focus_info() -> Optional[FocusInfo]:
         focus = runtime.service.engine.focus if runtime.service else None
@@ -592,6 +597,49 @@ def create_app(
         """
         await runtime.apply_settings(new_settings, restart=restart)
         return runtime.status()
+
+    # ------------------------------------------------------------------
+    # Home Assistant, via MQTT
+    #
+    # Everything else about the bridge lives in `hub_settings.json` and
+    # takes effect through the ordinary `PUT /api/settings` above -- see
+    # `HubRuntime.apply_settings`'s `mqtt_changed`. Only the broker password
+    # gets its own routes, for the same reason the Home Assistant *backend*'s
+    # access token does: it is a secret, and `GET /api/settings` is readable
+    # by anything on the LAN.
+    # ------------------------------------------------------------------
+
+    def _mqtt_status() -> MqttStatusInfo:
+        return MqttStatusInfo(
+            enabled=runtime.settings.mqtt_enabled,
+            connected=runtime.mqtt_bridge.connected,
+            detail=runtime.mqtt_bridge.detail,
+            has_password=bool(mqtt_credentials.read_password(runtime.settings.mqtt_node_id)),
+        )
+
+    @app.get("/api/mqtt", response_model=MqttStatusInfo)
+    async def get_mqtt() -> MqttStatusInfo:
+        return _mqtt_status()
+
+    @app.put("/api/mqtt/password", response_model=MqttStatusInfo)
+    async def put_mqtt_password(request: MqttPasswordRequest) -> MqttStatusInfo:
+        mqtt_credentials.write_password(runtime.settings.mqtt_node_id, request.password)
+        await runtime.mqtt_bridge.reconfigure()
+        return _mqtt_status()
+
+    @app.delete("/api/mqtt/password", response_model=MqttStatusInfo)
+    async def delete_mqtt_password() -> MqttStatusInfo:
+        mqtt_credentials.clear_password(runtime.settings.mqtt_node_id)
+        await runtime.mqtt_bridge.reconfigure()
+        return _mqtt_status()
+
+    @app.post("/api/mqtt/republish", response_model=MqttStatusInfo)
+    async def republish_mqtt() -> MqttStatusInfo:
+        """Forces a fresh discovery/state publish, for "I don't see it in Home Assistant"."""
+        published = await runtime.mqtt_bridge.republish()
+        if not published:
+            raise HTTPException(409, f"not connected to the broker ({runtime.mqtt_bridge.detail})")
+        return _mqtt_status()
 
     @app.get("/api/hub", response_model=RuntimeStatus)
     async def get_hub() -> RuntimeStatus:

@@ -40,6 +40,7 @@ class HubStore extends ChangeNotifier {
   HubSettings? settings;
   VersionInfo? version;
   UpdateCheckInfo? availableUpdate;
+  MqttStatus? mqttStatus;
   List<ButtonInfo> buttons = [];
   List<BackendInfo> backends = [];
   final List<HubEvent> events = [];
@@ -142,6 +143,12 @@ class HubStore extends ChangeNotifier {
       availableUpdate = await api.availableUpdate();
     } catch (_) {
       // Not deployed, or an older hub with no /api/update/available yet.
+    }
+
+    try {
+      mqttStatus = await api.mqttStatus();
+    } catch (_) {
+      // An older hub with no /api/mqtt yet. The Home Assistant card just stays hidden.
     }
 
     loading = false;
@@ -477,6 +484,62 @@ class HubStore extends ChangeNotifier {
     final buildId = availableUpdate?.available?.buildId;
     if (buildId == null) return false;
     return _prefs?.get(kDismissedUpdateBuildId) != buildId;
+  }
+
+  // ----------------------------------------------------------------------
+  // Home Assistant, via MQTT. Everything but the broker password is an
+  // ordinary settings field and goes through `saveSettings` like any
+  // other -- these three are only for the password, and for asking the
+  // bridge what it is doing right now.
+  // ----------------------------------------------------------------------
+
+  Future<void> refreshMqttStatus() async {
+    try {
+      mqttStatus = await api.mqttStatus();
+    } catch (_) {
+      // Left as-is: an older hub, or a request that happened to fail.
+    }
+    notifyListeners();
+  }
+
+  Future<bool> setMqttPassword(String password) async {
+    try {
+      mqttStatus = await api.setMqttPassword(password);
+      error = null;
+      notifyListeners();
+      return true;
+    } catch (err) {
+      error = '$err';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> clearMqttPassword() async {
+    try {
+      mqttStatus = await api.clearMqttPassword();
+      error = null;
+      notifyListeners();
+      return true;
+    } catch (err) {
+      error = '$err';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Forces a fresh discovery/state publish, for "I don't see it in Home Assistant".
+  Future<bool> republishMqtt() async {
+    try {
+      mqttStatus = await api.republishMqtt();
+      error = null;
+      notifyListeners();
+      return true;
+    } catch (err) {
+      error = '$err';
+      notifyListeners();
+      return false;
+    }
   }
 
   Future<void> _guard(Future<void> Function() action) async {

@@ -795,6 +795,44 @@ Two consequences worth knowing:
   `_start()` refuses in the other direction while a search is running, so a
   manual Start can't fight the search thread for the same hardware.
 
+### Home Assistant bridge (`src/harmony_hub/bridge/`)
+
+The opposite direction from the Home Assistant *backend* above: that one is
+the hub controlling a Home Assistant instance; this one is Home Assistant
+discovering the hub itself, over MQTT. `MqttBridge` publishes one device --
+an activity `select`, a `scene` entity per hub scene, an `event` entity for
+every remote button press, `paused`/`running` switches, and a
+`binary_sensor` per configured device's health -- and accepts commands back
+on `harmony_hub/<node_id>/cmd/#`, routed straight into `SceneEngine` (a raw
+`cmd/send` topic goes through `run_actions` the same way a scene's own macro
+does, so a Home Assistant automation can fire literally any command any
+backend offers).
+
+Owned by `HubRuntime`, the same tier as `EventBroker`, not by `HubService`:
+Home Assistant needs to see this hub go `offline` exactly when the hub
+itself fails or is stopped, so the bridge runs independently of whether the
+hub is up, on its own reconnect loop with exponential backoff. Like
+`ir_gateway.reconfigure`, a changed broker setting reconnects live --
+`HubRuntime.apply_settings`'s `mqtt_changed` -- with no process restart
+needed. Two things follow from being independent of `HubService`:
+
+* **The broker password is not configuration**, for the identical reason
+  the Home Assistant backend's access token is not: `credentials/mqtt_
+  <node_id>.password`, never round-tripped back out through `/api/mqtt`.
+* **Discovery removal is a two-step dance**, because Home Assistant does not
+  infer "this component is gone" from it simply being missing from a
+  republished device-discovery payload -- a key that disappears (a deleted
+  scene) is announced as an empty, platform-only config first, then omitted
+  on the publish after. `bridge/state_file.py` remembers what was last
+  published across a restart, in a small JSON file next to
+  `hub_settings.json`, rather than racing a retained-message read against
+  the broker on every reconnect.
+
+Tests (`tests/test_bridge*.py`) run against a fake MQTT client with the same
+shape as `aiomqtt.Client`, the same discipline `test_hub_backends_ir.py`
+keeps for a fake `pigpio` -- nothing here has been run against a real broker
+or a real Home Assistant instance yet.
+
 ### Running it
 
 ```
@@ -1029,3 +1067,15 @@ not by the unit tests alone.
    than the fake's instant returns. Acting on an incoming IR remote as an
    `EventSource` (so a spare remote could drive scenes, the way the Harmony
    remote itself does) is a related but separate feature, not started.
+6. **The Home Assistant bridge, untested against a real broker.** Same
+   shape as item 5: `bridge/` is unit-tested against a fake MQTT client
+   (`tests/test_bridge*.py`), verified against Home Assistant's documented
+   MQTT discovery schema, and confirmed end to end against a real running
+   hub for settings, connection attempts and the password flow -- but not
+   yet against a real Mosquitto broker or a real Home Assistant instance.
+   Worth confirming the discovery payload is accepted as written, entities
+   show up with sensible names, and the two-step removal dance actually
+   clears a deleted scene's entity rather than leaving it behind. Two
+   deliberately deferred, more opinionated pieces: a `button` entity per
+   remote button (opt-in, 48 of them), and an `update` entity wired to the
+   existing GitHub install path.

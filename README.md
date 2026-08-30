@@ -119,6 +119,12 @@ you fix things without needing a computer expert.
   won't forget it's on.
 - A **"Run checks"** button double-checks that everything is set up
   correctly and tells you if anything's missing.
+- A **Home Assistant** card publishes the hub itself into Home Assistant
+  over MQTT (needs a broker — the Mosquitto add-on works well): an activity
+  picker, a scene for each of yours, and an event for every remote button
+  press, so a physical Harmony button can trigger a Home Assistant
+  automation. This is the opposite direction from adding Home Assistant as
+  a device on the Devices tab, which is the hub controlling *it*.
 - If the hub was set up with the release system, a **Software** card shows
   what it's running, checks GitHub for a newer version on its own, and
   offers an **"Update software"** button when one is found — no computer or

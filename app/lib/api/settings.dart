@@ -33,6 +33,15 @@ class HubSettings {
     this.irPigpioHost = 'localhost',
     this.irPigpioPort = 8888,
     this.verbose = false,
+    this.mqttEnabled = false,
+    this.mqttHost = '',
+    this.mqttPort = 1883,
+    this.mqttUsername = '',
+    this.mqttTls = false,
+    this.mqttDiscoveryPrefix = 'homeassistant',
+    this.mqttNodeId = 'harmony_hub',
+    this.mqttDeviceName = 'Harmony Hub',
+    this.mqttPublishRepeats = false,
     this.githubUpdatesEnabled = true,
     this.githubRepo = 'windowslucker1121/HarmonyHubReplacement',
     this.updateCheckIntervalHours = 6.0,
@@ -76,6 +85,23 @@ class HubSettings {
 
   bool verbose;
 
+  /// Publishes this hub into Home Assistant over MQTT discovery -- see
+  /// `harmony_hub.bridge`. The broker password itself is not here; it goes
+  /// through `HubApi.setMqttPassword` instead, the same way the Home
+  /// Assistant *backend*'s access token is never part of a device's config.
+  bool mqttEnabled;
+  String mqttHost;
+  int mqttPort;
+  String mqttUsername;
+  bool mqttTls;
+  String mqttDiscoveryPrefix;
+  String mqttNodeId;
+  String mqttDeviceName;
+
+  /// Whether the button-press event entity also republishes the ~10/sec
+  /// packets a held button sends while repeating.
+  bool mqttPublishRepeats;
+
   /// Whether this hub checks GitHub for a new release on its own -- the
   /// pull counterpart to `updates_enabled` on `VersionInfo`/the push path,
   /// and independent of it. Mirrors `harmony_hub.settings.HubSettings`.
@@ -112,6 +138,15 @@ class HubSettings {
         irPigpioHost: (json['ir_pigpio_host'] ?? 'localhost') as String,
         irPigpioPort: (json['ir_pigpio_port'] ?? 8888) as int,
         verbose: (json['verbose'] ?? false) as bool,
+        mqttEnabled: (json['mqtt_enabled'] ?? false) as bool,
+        mqttHost: (json['mqtt_host'] ?? '') as String,
+        mqttPort: (json['mqtt_port'] ?? 1883) as int,
+        mqttUsername: (json['mqtt_username'] ?? '') as String,
+        mqttTls: (json['mqtt_tls'] ?? false) as bool,
+        mqttDiscoveryPrefix: (json['mqtt_discovery_prefix'] ?? 'homeassistant') as String,
+        mqttNodeId: (json['mqtt_node_id'] ?? 'harmony_hub') as String,
+        mqttDeviceName: (json['mqtt_device_name'] ?? 'Harmony Hub') as String,
+        mqttPublishRepeats: (json['mqtt_publish_repeats'] ?? false) as bool,
         githubUpdatesEnabled: (json['github_updates_enabled'] ?? true) as bool,
         githubRepo: (json['github_repo'] ?? 'windowslucker1121/HarmonyHubReplacement') as String,
         updateCheckIntervalHours: ((json['update_check_interval_hours'] ?? 6.0) as num).toDouble(),
@@ -139,6 +174,15 @@ class HubSettings {
         'ir_pigpio_host': irPigpioHost,
         'ir_pigpio_port': irPigpioPort,
         'verbose': verbose,
+        'mqtt_enabled': mqttEnabled,
+        'mqtt_host': mqttHost,
+        'mqtt_port': mqttPort,
+        'mqtt_username': mqttUsername,
+        'mqtt_tls': mqttTls,
+        'mqtt_discovery_prefix': mqttDiscoveryPrefix,
+        'mqtt_node_id': mqttNodeId,
+        'mqtt_device_name': mqttDeviceName,
+        'mqtt_publish_repeats': mqttPublishRepeats,
         'github_updates_enabled': githubUpdatesEnabled,
         'github_repo': githubRepo,
         'update_check_interval_hours': updateCheckIntervalHours,
@@ -409,5 +453,24 @@ class GithubInstallResult {
   factory GithubInstallResult.fromJson(Map<String, dynamic> json) => GithubInstallResult(
         buildId: json['build_id'] as String,
         started: (json['started'] ?? false) as bool,
+      );
+}
+
+/// What the Home Assistant card renders. Mirrors `harmony_hub.api.MqttStatusInfo`.
+class MqttStatus {
+  MqttStatus({required this.enabled, required this.connected, this.detail = '', this.hasPassword = false});
+
+  final bool enabled;
+  final bool connected;
+  final String detail;
+
+  /// Whether a broker password is on file -- never the password itself.
+  final bool hasPassword;
+
+  factory MqttStatus.fromJson(Map<String, dynamic> json) => MqttStatus(
+        enabled: (json['enabled'] ?? false) as bool,
+        connected: (json['connected'] ?? false) as bool,
+        detail: (json['detail'] ?? '') as String,
+        hasPassword: (json['has_password'] ?? false) as bool,
       );
 }

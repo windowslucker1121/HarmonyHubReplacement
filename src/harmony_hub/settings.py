@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import re
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -91,6 +92,39 @@ class HubSettings(Base):
     ir_pigpio_host: str = "localhost"
     ir_pigpio_port: int = Field(default=8888, ge=1, le=65535)
 
+    # -- Home Assistant, via MQTT discovery. `harmony_hub.bridge` is what
+    # reads these; kept optional and off by default so a hub with nothing
+    # configured here behaves exactly as it did before the bridge existed.
+    #: Master switch. Off means `HubRuntime.mqtt_bridge` never opens a
+    #: connection at all, the same way `source == "none"` means no radio.
+    mqtt_enabled: bool = False
+    #: Blank means "not configured yet" -- the bridge stays off even if
+    #: `mqtt_enabled` is true, rather than trying `localhost` and failing
+    #: forever. Most installs point this at the same box already running
+    #: their Home Assistant, but the two are independent.
+    mqtt_host: str = ""
+    mqtt_port: int = Field(default=1883, ge=1, le=65535)
+    mqtt_username: str = ""
+    #: The password itself is not here -- see `mqtt_password_path` in
+    #: `bridge/credentials.py` and its docstring for why, which is the same
+    #: reason the Home Assistant backend's token lives outside this file.
+    mqtt_tls: bool = False
+    #: Home Assistant's own default; only worth changing for a shared broker
+    #: where another `homeassistant/` tree already exists.
+    mqtt_discovery_prefix: str = "homeassistant"
+    #: Identifies this hub's device and topics on the broker. Two hubs
+    #: sharing one broker need different values here or their discovery
+    #: payloads collide.
+    mqtt_node_id: str = "harmony_hub"
+    #: What the device is called inside Home Assistant. Cosmetic only --
+    #: `mqtt_node_id` is what makes it a distinct device.
+    mqtt_device_name: str = "Harmony Hub"
+    #: Whether the button-press event entity also republishes the ~10/sec
+    #: packets a held button sends while repeating. Off by default: an
+    #: automation reacting to "the button was pressed" almost never wants
+    #: to fire ten times over for one hold.
+    mqtt_publish_repeats: bool = False
+
     verbose: bool = False
 
     #: Whether `/api/update` accepts a push at all. Off refuses every
@@ -141,6 +175,22 @@ class HubSettings(Base):
         if value is not None and value not in HARMONY_CHANNELS:
             raise ValueError(f"channel must be one of {HARMONY_CHANNELS}")
         return value
+
+    @field_validator("mqtt_node_id")
+    @classmethod
+    def _check_node_id(cls, value: str) -> str:
+        text = value.strip() or "harmony_hub"
+        if not re.fullmatch(r"[a-z0-9_-]+", text):
+            raise ValueError("mqtt_node_id must be lowercase letters, digits, '_' or '-'")
+        return text
+
+    @field_validator("mqtt_discovery_prefix")
+    @classmethod
+    def _check_discovery_prefix(cls, value: str) -> str:
+        text = value.strip().strip("/") or "homeassistant"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", text):
+            raise ValueError("mqtt_discovery_prefix must be a single path segment")
+        return text
 
     @field_validator("github_repo")
     @classmethod

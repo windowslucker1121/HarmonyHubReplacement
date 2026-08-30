@@ -19,6 +19,7 @@ dependencies = [
     "androidtvremote2>=0.3",
     "zeroconf>=0.132",
     "aiowebostv>=0.9",
+    "aiomqtt>=2.5",
     # For the IR backend: pigpio is a pure-Python client for the `pigpiod`
     # daemon, so it installs fine here and simply fails to connect at
     # runtime where there is no daemon or nothing wired -- see

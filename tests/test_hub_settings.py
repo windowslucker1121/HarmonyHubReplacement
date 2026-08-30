@@ -110,6 +110,46 @@ def test_an_ir_pin_outside_the_bcm_range_is_rejected():
         HubSettings(ir_tx_pin=-1)
 
 
+# ----------------------------------------------------------------------
+# MQTT bridge (Home Assistant)
+# ----------------------------------------------------------------------
+
+
+def test_mqtt_is_off_by_default_with_no_broker_configured():
+    settings = HubSettings()
+    assert settings.mqtt_enabled is False
+    assert settings.mqtt_host == ""
+    assert settings.mqtt_node_id == "harmony_hub"
+
+
+def test_mqtt_node_id_rejects_anything_that_would_break_a_topic():
+    with pytest.raises(ValidationError):
+        HubSettings(mqtt_node_id="not a topic segment")
+    with pytest.raises(ValidationError):
+        HubSettings(mqtt_node_id="Has/Slash")
+
+
+def test_mqtt_node_id_accepts_lowercase_digits_underscore_and_hyphen():
+    assert HubSettings(mqtt_node_id="living-room_hub2").mqtt_node_id == "living-room_hub2"
+
+
+def test_mqtt_discovery_prefix_strips_slashes():
+    assert HubSettings(mqtt_discovery_prefix="/homeassistant/").mqtt_discovery_prefix == "homeassistant"
+
+
+def test_mqtt_settings_do_not_need_a_process_restart():
+    """The bridge reconnects live -- see `HubRuntime.apply_settings`'s `mqtt_changed`."""
+    live = HubSettings()
+    assert not live.model_copy(update={"mqtt_enabled": True}).needs_process_restart(live)
+    assert not live.model_copy(update={"mqtt_host": "broker.local"}).needs_process_restart(live)
+
+
+def test_mqtt_settings_are_not_among_the_hub_start_problems():
+    """The bridge degrades on its own; a bad broker must not block the hub itself from starting."""
+    settings = HubSettings(mqtt_enabled=True, mqtt_host="")
+    assert settings.problems() == []
+
+
 def test_radio_gpio_is_empty_off_linux(monkeypatch):
     monkeypatch.setattr(settings_module.platform, "system", lambda: "Windows")
     settings = HubSettings(csn_pin="D5", ce_pin="D6")

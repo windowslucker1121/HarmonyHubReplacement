@@ -26,8 +26,10 @@ from typing import Literal, Optional
 from harmony_receiver.profiles import ButtonMap
 from pydantic import BaseModel
 
+from . import backends
 from . import config as config_module
 from . import settings as settings_module
+from .bridge import MqttBridge
 from .discovery import DiscoveryJob, DiscoveryMethod, DiscoveryStatus, DEFAULT_SNIFF_VERIFY_TIMEOUT
 from .events import EventBroker, HubEvent
 from .ir import gateway as ir_gateway
@@ -101,6 +103,11 @@ class HubRuntime:
         self.detail: str = "Not started yet"
         self.started_at: Optional[datetime] = None
         self.discovery = DiscoveryJob(self.settings.csn_pin, self.settings.ce_pin)
+
+        # Independent of the hub's own lifecycle -- see `bridge.MqttBridge`'s
+        # docstring for why it is owned here rather than by `HubService`.
+        # `create_app`'s lifespan starts and stops it alongside the hub.
+        self.mqtt_bridge = MqttBridge(self)
 
         # start/stop/restart are serialised: two concurrent restarts must not
         # interleave and leave half an engine behind.
@@ -246,6 +253,21 @@ class HubRuntime:
             or new_settings.ir_pigpio_host != self.settings.ir_pigpio_host
             or new_settings.ir_pigpio_port != self.settings.ir_pigpio_port
         )
+        # Like IR pins, unlike host/port: `MqttBridge` is not read once at
+        # process start, so a changed broker takes effect by reconnecting
+        # rather than by needing `restart`. Independent of `self.service`
+        # (unlike `ir_changed` above) because the bridge runs whether or not
+        # the hub itself is up -- see its docstring.
+        mqtt_changed = (
+            new_settings.mqtt_enabled != self.settings.mqtt_enabled
+            or new_settings.mqtt_host != self.settings.mqtt_host
+            or new_settings.mqtt_port != self.settings.mqtt_port
+            or new_settings.mqtt_username != self.settings.mqtt_username
+            or new_settings.mqtt_tls != self.settings.mqtt_tls
+            or new_settings.mqtt_discovery_prefix != self.settings.mqtt_discovery_prefix
+            or new_settings.mqtt_node_id != self.settings.mqtt_node_id
+            or new_settings.mqtt_device_name != self.settings.mqtt_device_name
+        )
 
         settings_module.save(new_settings, self.settings_path)
         self.settings = new_settings
@@ -263,6 +285,9 @@ class HubRuntime:
                 self.service.apply_buttons(self.buttons)
             if ir_changed and self.service is not None:
                 ir_gateway.reconfigure(self.settings)
+
+        if mqtt_changed:
+            await self.mqtt_bridge.reconfigure()
 
     async def save_config(self, new_config: HubConfig, force: bool = False) -> None:
         """Persists configuration and applies it to the hub if one is running.
@@ -283,6 +308,38 @@ class HubRuntime:
         if self.service is None:
             raise HubNotRunning()
         return self.service.simulate(key, kind)
+
+    async def device_statuses(self) -> "list[dict]":
+        """Health of every configured device, backend-agnostic.
+
+        Shared by `/api/state` and `bridge.MqttBridge`, which both need the
+        same "is this thing reachable" answer -- spelled out once here
+        rather than twice, so the two can never quietly disagree about what
+        a device's `ok`/`detail` means.
+        """
+        statuses = []
+        for device in self.config.devices:
+            backend = self.service.engine.backend_for(device.id) if self.service else None
+            if backend is None:
+                statuses.append(
+                    {
+                        "id": device.id, "name": device.name, "backend": device.backend,
+                        "running": False, "ok": False,
+                        "detail": "not started" if self.service else "the hub is stopped",
+                    }
+                )
+                continue
+            try:
+                health = await backend.health()
+            except Exception as err:
+                health = backends.Health(ok=False, detail=str(err))
+            statuses.append(
+                {
+                    "id": device.id, "name": device.name, "backend": device.backend,
+                    "running": True, "ok": health.ok, "detail": health.detail,
+                }
+            )
+        return statuses
 
     # ------------------------------------------------------------------
     # Learning buttons

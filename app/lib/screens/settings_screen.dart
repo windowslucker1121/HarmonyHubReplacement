@@ -342,6 +342,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: (context) => _serverCard(store, draft()),
       ),
       _Entry(
+        icon: Icons.home_outlined,
+        title: 'Home Assistant',
+        subtitle: !draft().mqttEnabled
+            ? 'Off'
+            : store.mqttStatus?.connected == true
+                ? 'Connected · ${draft().mqttHost}'
+                : (store.mqttStatus?.detail ?? 'Not connected yet'),
+        error: draft().mqttEnabled && store.mqttStatus?.connected == false,
+        editsDraft: true,
+        content: (context) => _homeAssistantCard(store, draft()),
+      ),
+      _Entry(
         icon: Icons.checklist,
         title: 'Checks',
         subtitle: 'Verify the setup, or try these settings before saving',
@@ -798,6 +810,219 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Widget _homeAssistantCard(HubStore store, HubSettings draft) {
+    final mqtt = store.mqttStatus;
+    return SectionCard(
+      title: 'Home Assistant',
+      subtitle: 'Publishes this hub into Home Assistant over MQTT discovery: an activity '
+          'picker, a scene per hub scene, and an event for every remote button press. Needs '
+          'an MQTT broker (the Mosquitto add-on works well) -- separate from adding Home '
+          'Assistant as a device above, which is the hub controlling *it*.',
+      children: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: draft.mqttEnabled,
+          onChanged: (value) => _edit((s) => s.mqttEnabled = value),
+          title: const Text('Publish to Home Assistant'),
+          subtitle: Text(!draft.mqttEnabled
+              ? 'Off'
+              : mqtt?.connected == true
+                  ? 'Connected'
+                  : (mqtt?.detail ?? 'Save to connect')),
+        ),
+        if (draft.mqttEnabled) ...[
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 2,
+                child: _TextField(
+                  label: 'Broker address',
+                  value: draft.mqttHost,
+                  hint: 'homeassistant.local',
+                  onChanged: (value) => _edit((s) => s.mqttHost = value.trim()),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _TextField(
+                  label: 'Port',
+                  value: '${draft.mqttPort}',
+                  keyboardType: TextInputType.number,
+                  onChanged: (value) =>
+                      _edit((s) => s.mqttPort = int.tryParse(value.trim()) ?? s.mqttPort),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _TextField(
+                  label: 'Username',
+                  value: draft.mqttUsername,
+                  hint: 'Leave blank for anonymous access',
+                  onChanged: (value) => _edit((s) => s.mqttUsername = value),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Padding(
+                  // Lines up with the text field next to it, which carries
+                  // its own label above the input.
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : () => _setMqttPassword(store),
+                        icon: const Icon(Icons.password),
+                        label: Text(mqtt?.hasPassword == true ? 'Change password' : 'Set password'),
+                      ),
+                      if (mqtt?.hasPassword == true)
+                        TextButton(
+                          onPressed: _busy ? null : () => _clearMqttPassword(store),
+                          child: const Text('Clear'),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: draft.mqttTls,
+            onChanged: (value) => _edit((s) => s.mqttTls = value),
+            title: const Text('Use TLS'),
+          ),
+          const SizedBox(height: 8),
+          Text('Advanced', style: Theme.of(context).textTheme.labelMedium),
+          const SizedBox(height: 4),
+          Text(
+            'Only worth changing for a second hub sharing this broker, or one already using '
+            'the "homeassistant" discovery prefix for something else.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _TextField(
+                  label: 'Device name in Home Assistant',
+                  value: draft.mqttDeviceName,
+                  onChanged: (value) => _edit((s) => s.mqttDeviceName = value),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _TextField(
+                  label: 'Node id',
+                  value: draft.mqttNodeId,
+                  onChanged: (value) => _edit((s) => s.mqttNodeId = value.trim()),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _TextField(
+            label: 'Discovery prefix',
+            value: draft.mqttDiscoveryPrefix,
+            onChanged: (value) => _edit((s) => s.mqttDiscoveryPrefix = value.trim()),
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: draft.mqttPublishRepeats,
+            onChanged: (value) => _edit((s) => s.mqttPublishRepeats = value),
+            title: const Text('Publish held-button repeats'),
+            subtitle: const Text(
+              'Off by default -- a held button sends roughly ten of these a second.',
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _busy ? null : () => _run(() => store.refreshMqttStatus()),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Refresh status'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy || mqtt?.connected != true ? null : () => _republishMqtt(store),
+                icon: const Icon(Icons.cloud_sync_outlined),
+                label: const Text('Republish to Home Assistant'),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// A one-field dialog for the broker password -- never round-tripped back
+  /// into `draft`, so it can never end up in the body `saveSettings` sends.
+  Future<String?> _askMqttPassword() {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('MQTT broker password'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder()),
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Save')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _setMqttPassword(HubStore store) async {
+    final password = await _askMqttPassword();
+    if (password == null || password.isEmpty || !mounted) return;
+    await _run(() async {
+      final ok = await store.setMqttPassword(password);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'Password saved' : (store.error ?? 'Could not save the password'))),
+      );
+    });
+  }
+
+  Future<void> _clearMqttPassword(HubStore store) async {
+    await _run(() async {
+      final ok = await store.clearMqttPassword();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'Password cleared' : (store.error ?? 'Could not clear the password'))),
+      );
+    });
+  }
+
+  Future<void> _republishMqtt(HubStore store) async {
+    await _run(() async {
+      final ok = await store.republishMqtt();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'Republished' : (store.error ?? 'Not connected to the broker'))),
+      );
+    });
   }
 
   Widget _checksCard(HubStore store) {
@@ -1375,7 +1600,7 @@ class _SaveBar extends StatelessWidget {
 
 /// A text field that follows the draft rather than owning its own state, so
 /// discarding changes actually clears what is on screen.
-class _TextField extends StatelessWidget {
+class _TextField extends StatefulWidget {
   const _TextField({
     required this.label,
     required this.value,
@@ -1393,21 +1618,47 @@ class _TextField extends StatelessWidget {
   final TextInputType? keyboardType;
 
   @override
+  State<_TextField> createState() => _TextFieldState();
+}
+
+class _TextFieldState extends State<_TextField> {
+  late final _controller = TextEditingController(text: widget.value);
+
+  @override
+  void didUpdateWidget(covariant _TextField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Only a programmatic change -- e.g. "use this address" -- lands here
+    // with a value the controller doesn't already have; an edit that came
+    // from this field's own `onChanged` is already reflected in it, so
+    // overwriting `.value` on every keystroke (and dragging the cursor back
+    // to the end with it) never happens.
+    if (widget.value != _controller.text) {
+      _controller.value = TextEditingValue(
+        text: widget.value,
+        selection: TextSelection.collapsed(offset: widget.value.length),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return TextFormField(
-      // Keyed on the value's identity so a programmatic change -- "use this
-      // address" -- actually shows up, while typing does not rebuild it.
-      key: ValueKey('$label:$value'),
-      initialValue: value,
-      keyboardType: keyboardType,
+      controller: _controller,
+      keyboardType: widget.keyboardType,
       decoration: InputDecoration(
-        labelText: label,
-        hintText: hint,
-        helperText: helper,
+        labelText: widget.label,
+        hintText: widget.hint,
+        helperText: widget.helper,
         helperMaxLines: 3,
         border: const OutlineInputBorder(),
       ),
-      onChanged: onChanged,
+      onChanged: widget.onChanged,
     );
   }
 }

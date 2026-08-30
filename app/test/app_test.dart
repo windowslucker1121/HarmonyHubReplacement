@@ -240,6 +240,42 @@ class FakeApi extends HubApi {
     return GithubInstallResult(buildId: fakeAvailableUpdate?.available?.buildId ?? '', started: true);
   }
 
+  /// `null` means an ordinary hub that has never touched the bridge --
+  /// the default, matching `disabled` on a fresh install.
+  MqttStatus fakeMqttStatus = MqttStatus(enabled: false, connected: false, detail: 'disabled');
+  String? mqttPasswordSet;
+  bool mqttPasswordCleared = false;
+  int republishRequests = 0;
+
+  @override
+  Future<MqttStatus> mqttStatus() async => fakeMqttStatus;
+
+  @override
+  Future<MqttStatus> setMqttPassword(String password) async {
+    mqttPasswordSet = password;
+    fakeMqttStatus = MqttStatus(
+      enabled: fakeMqttStatus.enabled, connected: fakeMqttStatus.connected,
+      detail: fakeMqttStatus.detail, hasPassword: true,
+    );
+    return fakeMqttStatus;
+  }
+
+  @override
+  Future<MqttStatus> clearMqttPassword() async {
+    mqttPasswordCleared = true;
+    fakeMqttStatus = MqttStatus(
+      enabled: fakeMqttStatus.enabled, connected: fakeMqttStatus.connected,
+      detail: fakeMqttStatus.detail, hasPassword: false,
+    );
+    return fakeMqttStatus;
+  }
+
+  @override
+  Future<MqttStatus> republishMqtt() async {
+    republishRequests++;
+    return fakeMqttStatus;
+  }
+
   @override
   Future<List<HubCheck>> checks() async => [
         HubCheck(name: 'Configuration file', ok: true, detail: '2 device(s), 2 scene(s)'),
@@ -2203,6 +2239,123 @@ void main() {
 
     expect(find.textContaining('v1.2.3 is available'), findsNothing);
     expect(prefs.get(kDismissedUpdateBuildId), 'build-2');
+  });
+
+  // ------------------------------------------------------------------
+  // Home Assistant, via MQTT
+  // ------------------------------------------------------------------
+
+  testWidgets('the Home Assistant row reads Off until enabled', (tester) async {
+    await openSettings(tester, FakeApi());
+    expect(find.widgetWithText(ListTile, 'Home Assistant'), findsOneWidget);
+    expect(find.text('Off'), findsOneWidget);
+  });
+
+  testWidgets('enabling Home Assistant reveals the broker fields', (tester) async {
+    await openSettings(tester, FakeApi());
+    await openSection(tester, 'Home Assistant');
+
+    expect(find.widgetWithText(TextFormField, 'Broker address'), findsNothing);
+
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Publish to Home Assistant'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(TextFormField, 'Broker address'), findsOneWidget);
+  });
+
+  testWidgets('the broker address and port are saved through ordinary settings', (tester) async {
+    final api = FakeApi();
+    await openSettings(tester, api);
+    await openSection(tester, 'Home Assistant');
+
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Publish to Home Assistant'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Broker address'), 'homeassistant.local',
+    );
+    await tester.enterText(find.widgetWithText(TextFormField, 'Port'), '8883');
+    await tester.pumpAndSettle();
+
+    final saveButton = find.widgetWithText(OutlinedButton, 'Save');
+    await reveal(tester, saveButton);
+    await tester.tap(saveButton);
+    await tester.pumpAndSettle();
+
+    expect(api.savedSettings.mqttEnabled, isTrue);
+    expect(api.savedSettings.mqttHost, 'homeassistant.local');
+    expect(api.savedSettings.mqttPort, 8883);
+  });
+
+  testWidgets('setting the broker password does not go through the settings draft', (tester) async {
+    final api = FakeApi();
+    await openSettings(tester, api);
+    await openSection(tester, 'Home Assistant');
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Publish to Home Assistant'));
+    await tester.pumpAndSettle();
+
+    final setPassword = find.widgetWithText(OutlinedButton, 'Set password');
+    await reveal(tester, setPassword);
+    await tester.tap(setPassword);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'Password'), 's3cret');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(api.mqttPasswordSet, 's3cret');
+    expect(find.text('Password saved'), findsOneWidget);
+    // Never carried on the settings object itself -- there is no such field.
+    expect(api.savedSettings.toJson().values, isNot(contains('s3cret')));
+    // And the button now reads as changing an existing password, not setting a fresh one.
+    expect(find.widgetWithText(OutlinedButton, 'Change password'), findsOneWidget);
+  });
+
+  testWidgets('clearing the broker password', (tester) async {
+    final api = FakeApi()
+      ..fakeMqttStatus = MqttStatus(enabled: true, connected: false, detail: 'connecting…', hasPassword: true);
+    await openSettings(tester, api);
+    await openSection(tester, 'Home Assistant');
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Publish to Home Assistant'));
+    await tester.pumpAndSettle();
+
+    final clearButton = find.widgetWithText(TextButton, 'Clear');
+    await reveal(tester, clearButton);
+    await tester.tap(clearButton);
+    await tester.pumpAndSettle();
+
+    expect(api.mqttPasswordCleared, isTrue);
+    expect(find.text('Password cleared'), findsOneWidget);
+  });
+
+  testWidgets('republish is disabled until the bridge is connected', (tester) async {
+    final api = FakeApi()
+      ..fakeMqttStatus = MqttStatus(enabled: true, connected: false, detail: 'connecting…');
+    await openSettings(tester, api);
+    await openSection(tester, 'Home Assistant');
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Publish to Home Assistant'));
+    await tester.pumpAndSettle();
+
+    final republishButton = find.widgetWithText(OutlinedButton, 'Republish to Home Assistant');
+    await reveal(tester, republishButton);
+    expect(tester.widget<OutlinedButton>(republishButton).onPressed, isNull);
+    expect(api.republishRequests, 0);
+  });
+
+  testWidgets('republish sends the request once connected', (tester) async {
+    final api = FakeApi()
+      ..fakeMqttStatus = MqttStatus(enabled: true, connected: true, detail: 'connected to broker.local:1883');
+    await openSettings(tester, api);
+    await openSection(tester, 'Home Assistant');
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Publish to Home Assistant'));
+    await tester.pumpAndSettle();
+
+    final republishButton = find.widgetWithText(OutlinedButton, 'Republish to Home Assistant');
+    await reveal(tester, republishButton);
+    await tester.tap(republishButton);
+    await tester.pumpAndSettle();
+
+    expect(api.republishRequests, 1);
   });
 
   testWidgets('a setting can be edited and saved', (tester) async {

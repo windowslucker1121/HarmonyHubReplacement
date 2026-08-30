@@ -952,6 +952,63 @@ def test_a_bind_change_is_saved_but_flagged_as_needing_a_restart(client):
 
 
 # ---------------------------------------------------------------------------
+# Home Assistant, via MQTT
+#
+# The bridge itself (a real broker connection) is covered end to end in
+# `test_bridge.py` against a fake client. These only need to check that the
+# password never round-trips back out through the API, the same guarantee
+# `test_hub_backends_homeassistant.py` keeps for the Home Assistant access
+# token.
+# ---------------------------------------------------------------------------
+
+
+def test_mqtt_starts_disabled_with_no_password_on_file(client):
+    status = client.get("/api/mqtt").json()
+    assert status == {"enabled": False, "connected": False, "detail": "disabled", "has_password": False}
+
+
+def test_mqtt_settings_apply_through_the_ordinary_settings_route(client):
+    settings = client.get("/api/settings").json()
+    settings["mqtt_enabled"] = True
+    # Loopback with (almost certainly) nothing listening: fails fast with no
+    # listener rather than depending on DNS or an external broker.
+    settings["mqtt_host"] = "127.0.0.1"
+    settings["mqtt_port"] = 18830
+
+    client.put("/api/settings", json=settings)
+
+    status = client.get("/api/mqtt").json()
+    assert status["enabled"] is True
+    # connected is False -- nothing is listening -- but the important thing
+    # here is that the bridge tried rather than staying "disabled".
+    assert status["detail"] != "disabled"
+
+
+def test_setting_the_mqtt_password_never_echoes_it_back(client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # the password lands in a relative credentials/ directory
+    response = client.put("/api/mqtt/password", json={"password": "s3cret"})
+    assert response.status_code == 200
+    assert "s3cret" not in response.text
+    assert response.json()["has_password"] is True
+
+
+def test_an_empty_mqtt_password_is_rejected(client):
+    assert client.put("/api/mqtt/password", json={"password": ""}).status_code == 422
+
+
+def test_clearing_the_mqtt_password(client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    client.put("/api/mqtt/password", json={"password": "s3cret"})
+    response = client.delete("/api/mqtt/password")
+    assert response.json()["has_password"] is False
+
+
+def test_republish_without_a_connection_is_a_409(client):
+    response = client.post("/api/mqtt/republish")
+    assert response.status_code == 409
+
+
+# ---------------------------------------------------------------------------
 # Checks and dry-run
 # ---------------------------------------------------------------------------
 

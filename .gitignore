@@ -74,6 +74,10 @@ captures/*.jsonl
 hub_config.json
 hub_settings.json
 
+# MQTT bridge's memory of what it last told Home Assistant about -- rebuilt
+# on the next discovery publish either way.
+mqtt_bridge_state.json
+
 # Paired client certificates. Secret, and meaningless on another machine.
 credentials/
 
