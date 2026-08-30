@@ -452,8 +452,15 @@ class FakeApi extends HubApi {
   @override
   Future<HubConfig> config() async => saved;
 
+  /// When set, `saveConfig` waits on this before returning -- lets a test
+  /// hold a save open to check what the UI does while one is in flight.
+  Completer<void>? saveGate;
+
   @override
-  Future<HubConfig> saveConfig(HubConfig config, {bool force = false}) async => saved = config;
+  Future<HubConfig> saveConfig(HubConfig config, {bool force = false}) async {
+    if (saveGate != null) await saveGate!.future;
+    return saved = config;
+  }
 
   @override
   Future<List<CommandInfo>> deviceCommands(String deviceId) async => deviceId == 'shield'
@@ -1870,6 +1877,42 @@ void main() {
 
     final scene = api.saved.scenes.firstWhere((s) => s.id == 'watch_tv');
     expect(scene.bindings['volume_up']!.onPress.single.device, 'shield');
+  });
+
+  testWidgets('Save is disabled while a mapping save is in flight, so leaving early cannot lose it',
+      (tester) async {
+    final api = await openMapper(tester);
+    // Holds `saveConfig` open, the way a real save is held open while the
+    // hub reconnects every backend -- long enough for a click on Save to
+    // land before this one has finished.
+    api.saveGate = Completer<void>();
+
+    await tester.tap(find.text('A new scene'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Continue'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Assign 3'));
+    await tester.pump(); // not pumpAndSettle -- the save is deliberately stuck open
+
+    // Nothing has reached the fake hub yet, and Save says so rather than
+    // sitting there as if it would happily take another click.
+    expect(api.saved.scenes.any((s) => s.id == 'watch_shield'), isFalse);
+    expect(find.text('Saving…'), findsOneWidget);
+    final saveButton = tester.widget<FilledButton>(
+      find.ancestor(of: find.text('Saving…'), matching: find.byType(FilledButton)),
+    );
+    expect(saveButton.onPressed, isNull);
+    expect(find.textContaining('Saving 3 button(s) to "Watch Shield"'), findsWidgets);
+
+    // The save finishes: Save is live again, and the mapping made it through
+    // -- rather than being clobbered by a second save built from a config
+    // snapshot taken before this one landed.
+    api.saveGate!.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Save'), findsOneWidget);
+    final scene = api.saved.scenes.firstWhere((s) => s.id == 'watch_shield');
+    expect(scene.bindings, hasLength(3));
   });
 
   Future<FakeApi> openHouseMapper(WidgetTester tester) async {

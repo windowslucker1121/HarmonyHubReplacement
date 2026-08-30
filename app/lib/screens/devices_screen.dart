@@ -657,7 +657,14 @@ class _DeviceEditorPageState extends State<DeviceEditorPage> {
     );
     if (assignments == null || assignments.isEmpty || !mounted) return;
 
+    // Captured now, while this page is still on screen -- saving a mapping
+    // is slow enough (the hub reconnects every backend) that the user may
+    // well hit Save and leave before it resolves. The messenger lives on
+    // `MaterialApp`, above the Navigator, so it outlives this route.
+    final messenger = ScaffoldMessenger.of(context);
+
     final config = widget.store.config!.copy();
+    String? replacedMessage;
     if (scene == null) {
       config.scenes.add(SceneConfig(
         id: slugify(targetName),
@@ -672,13 +679,29 @@ class _DeviceEditorPageState extends State<DeviceEditorPage> {
       // A scene driving this device should list it, or the scene screen would
       // show a device-less scene that nonetheless commands one.
       if (!target.devices.contains(_device.id)) target.devices.add(_device.id);
-      if (replaced > 0) _snack('$replaced existing binding(s) replaced');
+      if (replaced > 0) replacedMessage = '$replaced existing binding(s) replaced';
     }
 
-    if (await widget.store.saveConfig(config)) {
-      _snack('${assignments.length} buttons now drive ${_device.name} in "$targetName"');
+    // `_busy` disables Save (and every other device action) for the same
+    // reason it already does during discovery/pairing/learning -- so a click
+    // during the save queues behind it instead of racing it with a stale
+    // config snapshot and silently losing the mapping just made.
+    setState(() => _busy = true);
+    messenger.showSnackBar(
+      SnackBar(content: Text('Saving ${assignments.length} button(s) to "$targetName"...')),
+    );
+    final ok = await widget.store.saveConfig(config);
+    if (mounted) setState(() => _busy = false);
+
+    if (ok) {
+      if (replacedMessage != null) {
+        messenger.showSnackBar(SnackBar(content: Text(replacedMessage)));
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text('${assignments.length} buttons now drive ${_device.name} in "$targetName"')),
+      );
     } else {
-      _snack(widget.store.error ?? 'Could not save');
+      messenger.showSnackBar(SnackBar(content: Text(widget.store.error ?? 'Could not save')));
     }
   }
 
@@ -736,15 +759,29 @@ class _DeviceEditorPageState extends State<DeviceEditorPage> {
         title: Text(_isNew ? 'Add device' : _device.name),
         actions: [
           FilledButton(
-            onPressed: () {
-              final problem = _collect();
-              if (problem != null) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(problem)));
-                return;
-              }
-              Navigator.pop(context, _device);
-            },
-            child: const Text('Save'),
+            // Disabled while a mapping save is in flight, not just visibly
+            // busy: leaving mid-save would race a stale `_device` snapshot
+            // against it and silently drop whatever the save was writing.
+            onPressed: _busy
+                ? null
+                : () {
+                    final problem = _collect();
+                    if (problem != null) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(problem)));
+                      return;
+                    }
+                    Navigator.pop(context, _device);
+                  },
+            child: _busy
+                ? const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                      SizedBox(width: 8),
+                      Text('Saving…'),
+                    ],
+                  )
+                : const Text('Save'),
           ),
           const SizedBox(width: 12),
         ],
