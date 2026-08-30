@@ -73,36 +73,44 @@ class ActionListEditor extends StatelessWidget {
             child: Text(emptyHint, style: TextStyle(color: scheme.outline)),
           )
         else
-          ReorderableListView(
-            shrinkWrap: true,
-            buildDefaultDragHandles: false,
-            physics: const NeverScrollableScrollPhysics(),
-            onReorder: (oldIndex, newIndex) {
-              // ReorderableListView reports the target index before the item
-              // has been removed, so anything moving down is off by one.
-              if (newIndex > oldIndex) newIndex -= 1;
-              final updated = [...actions];
-              updated.insert(newIndex, updated.removeAt(oldIndex));
-              onChanged(updated);
-            },
-            children: [
-              for (var i = 0; i < actions.length; i++)
-                ListTile(
-                  key: ValueKey('$title-$i-${actions[i].describe()}'),
-                  dense: true,
-                  leading: ReorderableDragStartListener(
-                    index: i,
-                    child: const Icon(Icons.drag_handle, size: 20),
+          // The app-wide SelectionArea (see main.dart) turns a drag anywhere
+          // in its subtree into a text-selection drag by default, which wins
+          // the gesture arena against the drag handle below and reorders
+          // nothing. Opting this list out keeps its rows draggable; their
+          // text stops being selectable, which matters far less here than
+          // reordering does.
+          SelectionContainer.disabled(
+            child: ReorderableListView(
+              shrinkWrap: true,
+              buildDefaultDragHandles: false,
+              physics: const NeverScrollableScrollPhysics(),
+              onReorder: (oldIndex, newIndex) {
+                // ReorderableListView reports the target index before the item
+                // has been removed, so anything moving down is off by one.
+                if (newIndex > oldIndex) newIndex -= 1;
+                final updated = [...actions];
+                updated.insert(newIndex, updated.removeAt(oldIndex));
+                onChanged(updated);
+              },
+              children: [
+                for (var i = 0; i < actions.length; i++)
+                  ListTile(
+                    key: ValueKey('$title-$i-${actions[i].describe()}'),
+                    dense: true,
+                    leading: ReorderableDragStartListener(
+                      index: i,
+                      child: const Icon(Icons.drag_handle, size: 20),
+                    ),
+                    title: Text(actions[i].describe()),
+                    subtitle: Text('${i + 1}. ${actions[i].type}'),
+                    onTap: () => _edit(context, i),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, size: 20),
+                      onPressed: () => onChanged([...actions]..removeAt(i)),
+                    ),
                   ),
-                  title: Text(actions[i].describe()),
-                  subtitle: Text('${i + 1}. ${actions[i].type}'),
-                  onTap: () => _edit(context, i),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, size: 20),
-                    onPressed: () => onChanged([...actions]..removeAt(i)),
-                  ),
-                ),
-            ],
+              ],
+            ),
           ),
       ],
     );
