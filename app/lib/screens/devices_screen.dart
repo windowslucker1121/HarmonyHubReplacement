@@ -17,6 +17,7 @@ import '../state/ui_prefs.dart';
 import '../widgets/responsive_card_grid.dart';
 import '../widgets/search_field.dart';
 import '../widgets/section_card.dart';
+import '../widgets/selectable_route.dart';
 import 'entity_picker.dart';
 import 'ir_learn_screen.dart';
 import 'remote_mapper.dart';
@@ -46,9 +47,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
   bool _restoredQuery = false;
 
   Future<void> _openEditor(BuildContext context, HubStore store, DeviceConfig device) async {
-    final edited = await Navigator.push<DeviceConfig>(
+    final edited = await pushSelectable<DeviceConfig>(
       context,
-      MaterialPageRoute(builder: (_) => DeviceEditorPage(device: device, store: store)),
+      DeviceEditorPage(device: device, store: store),
     );
     if (edited == null) return;
 
@@ -637,23 +638,21 @@ class _DeviceEditorPageState extends State<DeviceEditorPage> {
       targetName = scene.name;
     }
 
-    final assignments = await Navigator.push<Map<String, Binding>>(
+    final assignments = await pushSelectable<Map<String, Binding>>(
       context,
-      MaterialPageRoute(
-        builder: (_) => RemoteMapperPage(
-          buttons: widget.store.buttons,
-          deviceId: _device.id,
-          deviceName: _device.name,
-          commands: _commands,
-          suggested: _suggested,
-          suggestedAdjust: _suggestedAdjust,
-          existing: scene?.bindings ?? const {},
-          targetName: targetName,
-          // Nothing to lose in a scene that does not exist yet, so start from
-          // the suggestions; an existing scene starts blank so that nothing
-          // is overwritten without being chosen.
-          preassignSuggested: scene == null,
-        ),
+      RemoteMapperPage(
+        buttons: widget.store.buttons,
+        deviceId: _device.id,
+        deviceName: _device.name,
+        commands: _commands,
+        suggested: _suggested,
+        suggestedAdjust: _suggestedAdjust,
+        existing: scene?.bindings ?? const {},
+        targetName: targetName,
+        // Nothing to lose in a scene that does not exist yet, so start from
+        // the suggestions; an existing scene starts blank so that nothing
+        // is overwritten without being chosen.
+        preassignSuggested: scene == null,
       ),
     );
     if (assignments == null || assignments.isEmpty || !mounted) return;

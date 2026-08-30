@@ -49,7 +49,12 @@ def _release_payload(*, tag="v1.2.3", assets=None) -> dict:
 
 
 def _client(handler) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    """`follow_redirects=True` matters here: it mirrors what `fetch_latest`
+    and `download` each build for themselves by default, since GitHub always
+    serves a release asset's `browser_download_url` as a redirect, never the
+    file directly -- see `test_fetch_latest_follows_a_redirected_asset_url`.
+    """
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
 async def test_fetch_latest_happy_path():
@@ -78,6 +83,68 @@ async def test_fetch_latest_happy_path():
     assert release.tar_url == "https://gh.example/bundle.tar.gz"
     assert release.tar_bytes == 12345
     assert release.build_id == "20260830T120000-abc1234"
+
+
+async def test_fetch_latest_follows_a_redirected_asset_url():
+    """Regression test: a real GitHub release asset's `browser_download_url`
+
+    is always a 302 to signed, time-limited blob storage -- never the file
+    itself. Every other test here (and, before this one existed, the whole
+    test suite) used a handler that returned the manifest directly, so
+    nothing ever caught `fetch_latest` failing to follow it -- a real
+    `harmony-deploy build`-published release did, with
+    `raise_for_status()` treating the unfollowed redirect as an error.
+    """
+    manifest_bytes = _manifest_json()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url == LATEST_URL:
+            return httpx.Response(
+                200,
+                json=_release_payload(
+                    assets=[
+                        {"name": "x.tar.gz", "browser_download_url": "https://gh.example/t.tar.gz"},
+                        {
+                            "name": "x.manifest.json",
+                            "browser_download_url": "https://gh.example/redirect/manifest.json",
+                        },
+                    ]
+                ),
+            )
+        if str(request.url) == "https://gh.example/redirect/manifest.json":
+            return httpx.Response(302, headers={"location": "https://blob.example/signed-manifest.json"})
+        if str(request.url) == "https://blob.example/signed-manifest.json":
+            return httpx.Response(200, content=manifest_bytes)
+        raise AssertionError(f"unexpected request to {request.url}")
+
+    async with _client(handler) as client:
+        release = await fetch_latest(REPO, client=client)
+
+    assert release.build_id == "20260830T120000-abc1234"
+
+
+async def test_fetch_latest_with_no_client_given_builds_one_that_follows_redirects(monkeypatch):
+    """Same requirement as the test above, but exercised through
+
+    `fetch_latest`'s own default client construction (`client=None`) rather
+    than a client the test builds -- proving the constructor call itself
+    passes `follow_redirects=True`. Subclassing the real `AsyncClient` and
+    injecting a `MockTransport` keeps this off the real network.
+    """
+    captured_kwargs = {}
+
+    class RecordingClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            captured_kwargs.update(kwargs)
+            kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(404))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", RecordingClient)
+
+    with pytest.raises(ReleaseFeedError, match="no published releases"):
+        await fetch_latest(REPO)
+
+    assert captured_kwargs.get("follow_redirects") is True
 
 
 async def test_fetch_latest_raises_when_repo_has_no_releases():

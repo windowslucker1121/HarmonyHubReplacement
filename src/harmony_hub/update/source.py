@@ -87,7 +87,7 @@ async def fetch_latest(
     no WAN is a normal, not broken, state.
     """
     owns_client = client is None
-    client = client or httpx.AsyncClient(timeout=timeout)
+    client = client or httpx.AsyncClient(timeout=timeout, follow_redirects=True)
     try:
         response = await client.get(
             f"https://api.github.com/repos/{repo}/releases/latest",

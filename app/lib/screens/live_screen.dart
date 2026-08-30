@@ -16,6 +16,7 @@ import '../state/hub_store.dart';
 import '../state/ui_prefs.dart';
 import '../widgets/activity_filter_sheet.dart';
 import '../widgets/remote_diagram.dart';
+import '../widgets/selectable_route.dart';
 import 'learn_screen.dart';
 
 class LiveScreen extends StatefulWidget {
@@ -102,10 +103,7 @@ class _LiveScreenState extends State<LiveScreen> {
 Future<void> openMaximizedRemote(BuildContext context) async {
   final prefs = PrefsScope.of(context);
   prefs.set(kRemoteMaximized, true);
-  await Navigator.push<void>(
-    context,
-    MaterialPageRoute<void>(builder: (_) => const MaximizedRemotePage()),
-  );
+  await pushSelectable<void>(context, const MaximizedRemotePage());
   prefs.set(kRemoteMaximized, false);
 }
 

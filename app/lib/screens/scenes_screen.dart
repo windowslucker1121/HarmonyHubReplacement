@@ -12,6 +12,7 @@ import '../widgets/labeled_slider.dart';
 import '../widgets/remote_diagram.dart';
 import '../widgets/responsive_card_grid.dart';
 import '../widgets/search_field.dart';
+import '../widgets/selectable_route.dart';
 import 'binding_editor.dart';
 
 class ScenesScreen extends StatefulWidget {
@@ -39,9 +40,9 @@ class _ScenesScreenState extends State<ScenesScreen> {
   bool _restoredQuery = false;
 
   Future<void> _openEditor(BuildContext context, HubStore store, SceneConfig scene, {bool isNew = false}) async {
-    final edited = await Navigator.push<SceneConfig>(
+    final edited = await pushSelectable<SceneConfig>(
       context,
-      MaterialPageRoute(builder: (_) => SceneEditorPage(scene: scene, store: store)),
+      SceneEditorPage(scene: scene, store: store),
     );
     if (edited == null) return;
 
@@ -694,18 +695,16 @@ class _SceneEditorPageState extends State<SceneEditorPage> {
               ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () async {
-                final edited = await Navigator.push<Map<String, Binding>>(
+                final edited = await pushSelectable<Map<String, Binding>>(
                   context,
-                  MaterialPageRoute(
-                    builder: (_) => BindingsPage(
-                      title: '${_scene.name} bindings',
-                      scopeDescription: 'the "${_scene.name}" scene',
-                      bindings: Map.of(_scene.bindings),
-                      store: widget.store,
-                      // What an unbound button would do instead, so the
-                      // picture shows the fallback the subtitle promises.
-                      fallback: _globalFallback(config),
-                    ),
+                  BindingsPage(
+                    title: '${_scene.name} bindings',
+                    scopeDescription: 'the "${_scene.name}" scene',
+                    bindings: Map.of(_scene.bindings),
+                    store: widget.store,
+                    // What an unbound button would do instead, so the
+                    // picture shows the fallback the subtitle promises.
+                    fallback: _globalFallback(config),
                   ),
                 );
                 if (edited != null) setState(() => _scene.bindings = edited);
@@ -774,16 +773,14 @@ class _BindingsPageState extends State<BindingsPage> {
   }
 
   Future<void> _edit(String key, String label) async {
-    final edited = await Navigator.push<Binding>(
+    final edited = await pushSelectable<Binding>(
       context,
-      MaterialPageRoute(
-        builder: (_) => BindingEditorPage(
-          buttonLabel: label,
-          binding: _bindings[key] ?? Binding(),
-          config: widget.store.config!,
-          api: widget.store.api,
-          scopeDescription: widget.scopeDescription,
-        ),
+      BindingEditorPage(
+        buttonLabel: label,
+        binding: _bindings[key] ?? Binding(),
+        config: widget.store.config!,
+        api: widget.store.api,
+        scopeDescription: widget.scopeDescription,
       ),
     );
     if (edited == null) return;

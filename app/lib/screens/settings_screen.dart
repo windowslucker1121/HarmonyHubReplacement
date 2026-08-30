@@ -374,33 +374,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => Scaffold(
-          appBar: AppBar(title: Text(entry.title)),
-          body: ListenableBuilder(
-            // Merged with `store`, not just `_tick`: most of this page is
-            // this screen's own local state (a draft edit, `_busy`), but
-            // the Software section also reads live store state -- whether
-            // a GitHub install is in progress, and its latest progress
-            // detail -- that changes from `update`/`hub` events arriving
-            // over the websocket, not from anything this screen did itself.
-            listenable: Listenable.merge([_tick, store]),
-            builder: (context, _) => ListView(
-              padding: const EdgeInsets.all(16),
-              children: [entry.content(context)],
+        // A pushed route sits in its own Overlay entry, outside the
+        // SelectionArea wrapped around `home` in main.dart -- so this page
+        // needs its own to keep things like version strings and error text
+        // selectable.
+        builder: (context) => SelectionArea(
+          child: Scaffold(
+            appBar: AppBar(title: Text(entry.title)),
+            body: ListenableBuilder(
+              // Merged with `store`, not just `_tick`: most of this page is
+              // this screen's own local state (a draft edit, `_busy`), but
+              // the Software section also reads live store state -- whether
+              // a GitHub install is in progress, and its latest progress
+              // detail -- that changes from `update`/`hub` events arriving
+              // over the websocket, not from anything this screen did itself.
+              listenable: Listenable.merge([_tick, store]),
+              builder: (context, _) => ListView(
+                padding: const EdgeInsets.all(16),
+                children: [entry.content(context)],
+              ),
             ),
+            bottomNavigationBar: entry.editsDraft
+                ? ListenableBuilder(
+                    listenable: _tick,
+                    builder: (context, _) => _SaveBar(
+                      dirty: _dirty,
+                      busy: _busy,
+                      onSave: () => _save(store, restart: false),
+                      onSaveAndRestart: () => _save(store, restart: true),
+                      onRevert: () => _notify(() => _draft = null),
+                    ),
+                  )
+                : null,
           ),
-          bottomNavigationBar: entry.editsDraft
-              ? ListenableBuilder(
-                  listenable: _tick,
-                  builder: (context, _) => _SaveBar(
-                    dirty: _dirty,
-                    busy: _busy,
-                    onSave: () => _save(store, restart: false),
-                    onSaveAndRestart: () => _save(store, restart: true),
-                    onRevert: () => _notify(() => _draft = null),
-                  ),
-                )
-              : null,
         ),
       ),
     );

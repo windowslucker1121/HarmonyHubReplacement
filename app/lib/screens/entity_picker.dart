@@ -15,6 +15,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
+import '../widgets/selectable_route.dart';
 
 /// Picks entities. Returns the chosen ids in a stable order, or null if
 /// the user backed out.
@@ -24,14 +25,12 @@ Future<List<String>?> showEntityPicker({
   required List<EntityInfo> entities,
   required List<String> selected,
 }) {
-  return Navigator.push<List<String>>(
+  return pushSelectable<List<String>>(
     context,
-    MaterialPageRoute(
-      builder: (_) => EntityPickerPage(
-        deviceName: deviceName,
-        entities: entities,
-        selected: selected,
-      ),
+    EntityPickerPage(
+      deviceName: deviceName,
+      entities: entities,
+      selected: selected,
     ),
   );
 }

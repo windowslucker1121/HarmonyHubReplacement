@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../state/hub_store.dart';
+import '../widgets/selectable_route.dart';
 import 'scenes_screen.dart' show slugify;
 
 Future<void> openIrLearnPage(
@@ -31,15 +32,13 @@ Future<void> openIrLearnPage(
   required String deviceName,
   required BackendInfo backend,
 }) =>
-    Navigator.push(
+    pushSelectable<void>(
       context,
-      MaterialPageRoute<void>(
-        builder: (_) => IrLearnPage(
-          store: store,
-          deviceId: deviceId,
-          deviceName: deviceName,
-          backend: backend,
-        ),
+      IrLearnPage(
+        store: store,
+        deviceId: deviceId,
+        deviceName: deviceName,
+        backend: backend,
       ),
     );
 

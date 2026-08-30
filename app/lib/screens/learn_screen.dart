@@ -16,14 +16,13 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../state/hub_store.dart';
+import '../widgets/selectable_route.dart';
 import 'scenes_screen.dart' show slugify;
 
 /// Opens the learning screen. Reached from the live view's empty state and
 /// from Settings, which are the two places you notice buttons are missing.
-Future<void> openLearnPage(BuildContext context, HubStore store) => Navigator.push(
-      context,
-      MaterialPageRoute<void>(builder: (_) => LearnPage(store: store)),
-    );
+Future<void> openLearnPage(BuildContext context, HubStore store) =>
+    pushSelectable<void>(context, LearnPage(store: store));
 
 /// A signature seen on the wire that nobody has named yet.
 class _Pending {
