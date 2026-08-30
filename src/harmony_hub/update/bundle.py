@@ -18,7 +18,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from .manifest import Manifest, iter_allowed_files
+from .manifest import WEB_PREFIX, Manifest, iter_allowed_files
 
 
 def read_requirements(pyproject_path: "Path | str") -> str:
@@ -52,14 +52,14 @@ def _collect_members(repo_root: Path, web_dir: Optional[Path]) -> "list[tuple[st
     members: "list[tuple[str, Path]]" = []
     for relative in iter_allowed_files(repo_root):
         arcname = relative.as_posix()
-        if arcname.startswith("src/harmony_hub/web/"):
+        if arcname.startswith(WEB_PREFIX):
             continue  # never present in a working tree; spliced in below instead
         members.append((arcname, repo_root / relative))
 
     if web_dir is not None and Path(web_dir).is_dir():
         for path in sorted(Path(web_dir).rglob("*")):
             if path.is_file():
-                arcname = "src/harmony_hub/web/" + path.relative_to(web_dir).as_posix()
+                arcname = WEB_PREFIX + path.relative_to(web_dir).as_posix()
                 members.append((arcname, path))
 
     members.sort(key=lambda pair: pair[0])

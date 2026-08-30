@@ -283,11 +283,14 @@ class HubApi {
           .toList();
 
   // ----------------------------------------------------------------------
-  // Remote update. Pushing a new bundle is done from the dev machine with
-  // `harmony-deploy`, not from the app -- these three are what the Settings
-  // screen needs to show what is running and to offer a rollback. Progress
-  // while a push is in flight arrives through the same event stream as
-  // everything else (`HubEvent.type == 'update'`), not polled here.
+  // Remote update. A signed push from a dev machine with `harmony-deploy`
+  // still needs nothing from the app beyond `version`/`updateHistory`/
+  // `rollbackUpdate` below. `availableUpdate`/`checkForUpdate`/
+  // `installUpdate` are the pull side: the hub checking GitHub on its own,
+  // and this app being the thing that triggers installing what it found.
+  // Progress for either kind of install arrives through the same event
+  // stream as everything else (`HubEvent.type == 'update'`), not polled
+  // here.
   // ----------------------------------------------------------------------
 
   Future<VersionInfo> version() async =>
@@ -300,6 +303,22 @@ class HubApi {
 
   Future<UpdateResult> rollbackUpdate() async =>
       UpdateResult.fromJson((await _send('POST', '/api/update/rollback')) as Map<String, dynamic>);
+
+  /// The last GitHub release check's result, from cache -- no network request of its own.
+  Future<UpdateCheckInfo> availableUpdate() async =>
+      UpdateCheckInfo.fromJson((await _get('/api/update/available')) as Map<String, dynamic>);
+
+  /// Asks the hub to check GitHub for a new release now. Throttled server-side
+  /// (see `update.check.MIN_MANUAL_CHECK_SECONDS`), so this is safe to call
+  /// from a button a person can press repeatedly.
+  Future<UpdateCheckInfo> checkForUpdate() async =>
+      UpdateCheckInfo.fromJson((await _send('POST', '/api/update/check')) as Map<String, dynamic>);
+
+  /// Installs the release [availableUpdate] last reported. Returns once the
+  /// install has *started*, not once it has finished -- watch for `update`
+  /// events (or poll [version]) the same way a signed push is watched.
+  Future<GithubInstallResult> installUpdate({bool force = false}) async => GithubInstallResult.fromJson(
+      (await _send('POST', '/api/update/install${force ? '?force=true' : ''}')) as Map<String, dynamic>);
 
   Future<void> activateScene(String sceneId) => _send('POST', '/api/scenes/$sceneId/activate');
 

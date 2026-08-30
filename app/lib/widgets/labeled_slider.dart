@@ -19,6 +19,7 @@ class LabeledSlider extends StatelessWidget {
     required this.divisions,
     required this.onChanged,
     required this.description,
+    this.formatValue,
   });
 
   final String label;
@@ -29,6 +30,15 @@ class LabeledSlider extends StatelessWidget {
   final ValueChanged<double> onChanged;
   final String description;
 
+  /// How the current value is shown next to the label and on the slider's
+  /// drag thumb. Defaults to "seconds, with off at zero" -- what every
+  /// existing use of this widget is -- but an acceleration multiplier reads
+  /// as "4×", not "4.0s", so that one passes its own.
+  final String Function(double value)? formatValue;
+
+  String _format(double value) =>
+      formatValue?.call(value) ?? (value == 0 ? 'off' : '${value.toStringAsFixed(1)}s');
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -38,7 +48,7 @@ class LabeledSlider extends StatelessWidget {
           children: [
             Expanded(child: Text(label, style: Theme.of(context).textTheme.bodyMedium)),
             Text(
-              value == 0 ? 'off' : '${value.toStringAsFixed(1)}s',
+              _format(value),
               style: Theme.of(context).textTheme.labelLarge,
             ),
           ],
@@ -48,7 +58,7 @@ class LabeledSlider extends StatelessWidget {
           min: min,
           max: max,
           divisions: divisions,
-          label: value == 0 ? 'off' : '${value.toStringAsFixed(1)}s',
+          label: _format(value),
           onChanged: onChanged,
         ),
         Text(

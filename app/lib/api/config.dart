@@ -100,6 +100,8 @@ class Binding {
     this.holdSeconds = 0.6,
     this.repeatDelay,
     this.repeatInterval,
+    this.repeatAccel,
+    this.repeatAccelSeconds,
   })  : onPress = onPress ?? [],
         onRepeat = onRepeat ?? [],
         onHold = onHold ?? [],
@@ -125,6 +127,19 @@ class Binding {
   /// Minimum gap between repeats once they have started. `null` follows
   /// [HubConfig.defaultRepeatInterval].
   double? repeatInterval;
+
+  /// How many times faster [onRepeat] fires once the button has been held
+  /// for [repeatAccelSeconds], on top of the flat rate above. `1.0` (or
+  /// `null`, following [HubConfig.defaultRepeatAccel]) means no ramp at
+  /// all -- the remote only reports a hold every ~100ms, so past a certain
+  /// point the only way to go faster is to run the repeat actions more than
+  /// once per packet instead of waiting for a packet that will not arrive
+  /// any sooner.
+  double? repeatAccel;
+
+  /// How long the button must be held for [repeatAccel] to reach its full
+  /// effect. `null` follows [HubConfig.defaultRepeatAccelSeconds].
+  double? repeatAccelSeconds;
 
   bool get isEmpty =>
       onPress.isEmpty && onRepeat.isEmpty && onHold.isEmpty && onRelease.isEmpty;
@@ -160,6 +175,8 @@ class Binding {
         holdSeconds: (json['hold_seconds'] as num?)?.toDouble() ?? 0.6,
         repeatDelay: (json['repeat_delay'] as num?)?.toDouble(),
         repeatInterval: (json['repeat_interval'] as num?)?.toDouble(),
+        repeatAccel: (json['repeat_accel'] as num?)?.toDouble(),
+        repeatAccelSeconds: (json['repeat_accel_seconds'] as num?)?.toDouble(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -170,6 +187,8 @@ class Binding {
         'hold_seconds': holdSeconds,
         'repeat_delay': repeatDelay,
         'repeat_interval': repeatInterval,
+        'repeat_accel': repeatAccel,
+        'repeat_accel_seconds': repeatAccelSeconds,
       };
 
   Binding copy() => Binding.fromJson(toJson());
@@ -273,6 +292,8 @@ class HubConfig {
     this.defaultScene,
     this.defaultRepeatDelay = 0.5,
     this.defaultRepeatInterval = 0.0,
+    this.defaultRepeatAccel = 1.0,
+    this.defaultRepeatAccelSeconds = 3.0,
   })  : devices = devices ?? [],
         scenes = scenes ?? [];
 
@@ -292,6 +313,13 @@ class HubConfig {
   double defaultRepeatDelay;
   double defaultRepeatInterval;
 
+  /// Layers an exponential ramp on top of the flat repeat rate above: the
+  /// longer a button is held, the faster it repeats, up to
+  /// [defaultRepeatAccel] times the base rate once [defaultRepeatAccelSeconds]
+  /// of holding has passed. `1.0` disables the ramp entirely.
+  double defaultRepeatAccel;
+  double defaultRepeatAccelSeconds;
+
   DeviceConfig? device(String id) => devices.where((d) => d.id == id).firstOrNull;
 
   SceneConfig? scene(String id) => scenes.where((s) => s.id == id).firstOrNull;
@@ -308,6 +336,8 @@ class HubConfig {
         defaultScene: json['default_scene'] as String?,
         defaultRepeatDelay: (json['default_repeat_delay'] as num?)?.toDouble() ?? 0.5,
         defaultRepeatInterval: (json['default_repeat_interval'] as num?)?.toDouble() ?? 0.0,
+        defaultRepeatAccel: (json['default_repeat_accel'] as num?)?.toDouble() ?? 1.0,
+        defaultRepeatAccelSeconds: (json['default_repeat_accel_seconds'] as num?)?.toDouble() ?? 3.0,
       );
 
   Map<String, dynamic> toJson() => {
@@ -318,6 +348,8 @@ class HubConfig {
         'default_scene': defaultScene,
         'default_repeat_delay': defaultRepeatDelay,
         'default_repeat_interval': defaultRepeatInterval,
+        'default_repeat_accel': defaultRepeatAccel,
+        'default_repeat_accel_seconds': defaultRepeatAccelSeconds,
       };
 
   HubConfig copy() => HubConfig.fromJson(toJson());

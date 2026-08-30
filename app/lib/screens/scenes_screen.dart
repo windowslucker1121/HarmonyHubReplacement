@@ -27,7 +27,8 @@ class ScenesScreen extends StatefulWidget {
 const _globalSceneKeywords = 'global scene fallback default unbound idle';
 
 /// Keywords for the "Default repeat timing" card, likewise fixed.
-const _repeatTimingKeywords = 'default repeat timing delay interval hold wait button press';
+const _repeatTimingKeywords =
+    'default repeat timing delay interval hold wait button press accelerate acceleration speed up ramp';
 
 class _ScenesScreenState extends State<ScenesScreen> {
   String _query = '';
@@ -238,7 +239,9 @@ class _ScenesScreenState extends State<ScenesScreen> {
                                     final saved = await store.saveConfig(
                                       config.copy()
                                         ..defaultRepeatDelay = choice.delay
-                                        ..defaultRepeatInterval = choice.interval,
+                                        ..defaultRepeatInterval = choice.interval
+                                        ..defaultRepeatAccel = choice.accel
+                                        ..defaultRepeatAccelSeconds = choice.accelSeconds,
                                     );
                                     if (context.mounted && !saved) {
                                       ScaffoldMessenger.of(context).showSnackBar(
@@ -364,10 +367,15 @@ String _describeRepeatTiming(HubConfig config) {
   final paced = config.defaultRepeatInterval == 0
       ? ''
       : ', then at most every ${config.defaultRepeatInterval.toStringAsFixed(1)}s';
-  return 'Right now: $waits$paced.';
+  final accel = config.defaultRepeatAccel > 1
+      ? ', speeding up to ${config.defaultRepeatAccel.toStringAsFixed(0)}× after '
+          '${config.defaultRepeatAccelSeconds.toStringAsFixed(1)}s held'
+      : '';
+  return 'Right now: $waits$paced$accel.';
 }
 
-/// Edits `default_repeat_delay` / `default_repeat_interval` -- the timing
+/// Edits `default_repeat_delay` / `default_repeat_interval` /
+/// `default_repeat_accel` / `default_repeat_accel_seconds` -- the timing
 /// every button that repeats follows unless it sets its own.
 ///
 /// The remote reports a held button roughly every 100ms and never says how
@@ -375,14 +383,16 @@ String _describeRepeatTiming(HubConfig config) {
 /// firing three or four times: it is one setting for the whole remote
 /// instead of a copy on every binding, because in practice they are all the
 /// same number.
-Future<({double delay, double interval})?> _pickDefaultRepeatTiming(
+Future<({double delay, double interval, double accel, double accelSeconds})?> _pickDefaultRepeatTiming(
   BuildContext context,
   HubConfig config,
 ) {
   double delay = config.defaultRepeatDelay;
   double interval = config.defaultRepeatInterval;
+  double accel = config.defaultRepeatAccel;
+  double accelSeconds = config.defaultRepeatAccelSeconds;
 
-  return showDialog<({double delay, double interval})>(
+  return showDialog<({double delay, double interval, double accel, double accelSeconds})>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) => AlertDialog(
@@ -426,8 +436,37 @@ Future<({double delay, double interval})?> _pickDefaultRepeatTiming(
                     : 'At most once every ${interval.toStringAsFixed(1)}s while held.',
               ),
               const SizedBox(height: 8),
+              LabeledSlider(
+                label: 'Speed up the longer it is held',
+                value: accel,
+                min: 1,
+                max: 16,
+                divisions: 15,
+                onChanged: (value) => setState(() => accel = value),
+                formatValue: (v) => v <= 1 ? 'off' : '${v.toStringAsFixed(0)}×',
+                description: accel <= 1
+                    ? 'Off: repeats stay at the rate set above for as long as the button is held. '
+                        'The remote only reports a hold about ten times a second, so this is the '
+                        'only way to go faster than that.'
+                    : 'Ramps up to ${accel.toStringAsFixed(0)}× that rate the longer the button '
+                        'stays down.',
+              ),
+              if (accel > 1) ...[
+                const SizedBox(height: 8),
+                LabeledSlider(
+                  label: 'Time to reach full speed',
+                  value: accelSeconds,
+                  min: 0.5,
+                  max: 10.0,
+                  divisions: 19,
+                  onChanged: (value) => setState(() => accelSeconds = value),
+                  description: 'The button must stay held this long before repeats reach '
+                      '${accel.toStringAsFixed(0)}×.',
+                ),
+              ],
+              const SizedBox(height: 8),
               Text(
-                'A button can still override this for itself in its own bindings.',
+                'A button can still override any of this for itself in its own bindings.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context).colorScheme.outline,
                     ),
@@ -438,7 +477,10 @@ Future<({double delay, double interval})?> _pickDefaultRepeatTiming(
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           FilledButton(
-            onPressed: () => Navigator.pop(context, (delay: delay, interval: interval)),
+            onPressed: () => Navigator.pop(
+              context,
+              (delay: delay, interval: interval, accel: accel, accelSeconds: accelSeconds),
+            ),
             child: const Text('Save'),
           ),
         ],

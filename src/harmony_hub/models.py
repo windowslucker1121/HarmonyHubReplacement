@@ -146,6 +146,14 @@ class Binding(Base):
     usually something slow like a blind or a projector lens -- that
     genuinely needs different timing from everything else.
 
+    `repeat_accel` and `repeat_accel_seconds` ramp the interval down further
+    the longer the button stays held, up to `repeat_accel` times the base
+    rate once `repeat_accel_seconds` has elapsed. `repeat_accel` at its
+    default of `1.0` means no ramp -- repeats fire at the flat rate
+    `repeat_interval` already describes, exactly as before this existed.
+    Like the two settings above, `None` follows `HubConfig`'s
+    `default_repeat_accel` / `default_repeat_accel_seconds`.
+
     `on_hold` changes the timing of `on_press`. When a hold action is
     configured there is no way to know whether a press is short or long until
     the button is either released or held long enough, so `on_press` is held
@@ -167,6 +175,14 @@ class Binding(Base):
     #: Overrides `HubConfig.default_repeat_interval` for this button alone.
     #: `None` (the default) follows the config-wide setting.
     repeat_interval: Optional[float] = Field(default=None, ge=0, le=10)
+
+    #: Overrides `HubConfig.default_repeat_accel` for this button alone.
+    #: `None` (the default) follows the config-wide setting.
+    repeat_accel: Optional[float] = Field(default=None, ge=1, le=16)
+
+    #: Overrides `HubConfig.default_repeat_accel_seconds` for this button
+    #: alone. `None` (the default) follows the config-wide setting.
+    repeat_accel_seconds: Optional[float] = Field(default=None, gt=0, le=30)
 
     @property
     def is_empty(self) -> bool:
@@ -296,6 +312,13 @@ class HubConfig(Base):
     copy on every binding that repeats, because in practice they are all the
     same number. A `Binding` can still set its own and override this for the
     one button that genuinely needs different timing.
+
+    `default_repeat_accel` and `default_repeat_accel_seconds` layer an
+    exponential ramp on top of that: the longer a button stays held, the
+    faster its repeats fire, up to `default_repeat_accel` times the base
+    rate once `default_repeat_accel_seconds` of holding has passed.
+    `default_repeat_accel` at `1.0` (the default) disables the ramp entirely
+    -- repeats stay at the flat rate the two settings above already produce.
     """
 
     version: int = CONFIG_VERSION
@@ -306,6 +329,8 @@ class HubConfig(Base):
 
     default_repeat_delay: float = Field(default=0.5, ge=0, le=10)
     default_repeat_interval: float = Field(default=0.0, ge=0, le=10)
+    default_repeat_accel: float = Field(default=1.0, ge=1, le=16)
+    default_repeat_accel_seconds: float = Field(default=3.0, gt=0, le=30)
 
     def device(self, device_id: str) -> Optional[Device]:
         return next((d for d in self.devices if d.id == device_id), None)

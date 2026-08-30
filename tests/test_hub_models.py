@@ -189,6 +189,45 @@ def test_binding_reports_emptiness_and_looks_up_phases():
     assert Binding().is_empty
 
 
+def test_repeat_acceleration_defaults_to_off():
+    """`repeat_accel` at 1.0 is what makes acceleration opt-in: an existing
+    config that has never heard of it must load and behave unchanged."""
+    binding = Binding()
+    config = HubConfig.model_validate(make_config())
+
+    assert binding.repeat_accel is None
+    assert binding.repeat_accel_seconds is None
+    assert config.default_repeat_accel == 1.0
+    assert config.default_repeat_accel_seconds == 3.0
+
+
+def test_repeat_acceleration_round_trips_on_a_binding_and_the_config():
+    config = HubConfig.model_validate(make_config(
+        default_repeat_accel=4,
+        default_repeat_accel_seconds=2,
+        scenes=[
+            {
+                "id": "watch_tv",
+                "name": "Watch TV",
+                "devices": ["tv"],
+                "bindings": {
+                    "volume_up": {
+                        "on_repeat": [{"type": "device", "device": "tv", "command": "volume_up"}],
+                        "repeat_accel": 8,
+                        "repeat_accel_seconds": 1.5,
+                    }
+                },
+            }
+        ],
+    ))
+
+    assert config.default_repeat_accel == 4
+    assert config.default_repeat_accel_seconds == 2
+    binding = config.scene("watch_tv").bindings["volume_up"]
+    assert binding.repeat_accel == 8
+    assert binding.repeat_accel_seconds == 1.5
+
+
 def test_config_round_trips_through_disk(tmp_path):
     original = HubConfig.model_validate(make_config())
     path = tmp_path / "hub_config.json"

@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from harmony_deploy.bundling import build_web, git_info, run_tests
+from harmony_deploy.bundling import build_release_bundle, build_web, git_info, run_tests
 from harmony_deploy.errors import DeployError
+from harmony_hub.update.manifest import Manifest
 
 
 def test_git_info_outside_a_checkout_returns_empty_rather_than_raising(tmp_path):
@@ -76,3 +77,46 @@ def test_build_web_raises_on_a_failed_build(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1))
     with pytest.raises(DeployError, match="flutter build web failed"):
         build_web(tmp_path, "build-1")
+
+
+def _seed_minimal_repo(root: Path) -> Path:
+    root.mkdir(parents=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "fake"\ndependencies = ["httpx>=0.27"]\n', encoding="utf-8")
+    src_hub = root / "src" / "harmony_hub"
+    src_hub.mkdir(parents=True)
+    (src_hub / "__init__.py").write_text("", encoding="utf-8")
+    src_receiver = root / "src" / "harmony_receiver"
+    src_receiver.mkdir(parents=True)
+    (src_receiver / "__init__.py").write_text("", encoding="utf-8")
+    return root
+
+
+def test_build_release_bundle_writes_bundle_and_manifest_json_to_out_dir(tmp_path):
+    """This is what `harmony-deploy build` -- and so CI's release job -- relies on:
+
+    a `manifest.json` file next to the tar, since a GitHub release asset
+    has to be an actual file, not a value only ever held in memory.
+    """
+    repo = _seed_minimal_repo(tmp_path / "repo")
+    out_dir = tmp_path / "dist"
+
+    manifest, tar_path = build_release_bundle(
+        repo, run_tests_first=False, build_web_first=False, out_dir=out_dir, write_manifest_json=True
+    )
+
+    assert tar_path.parent == out_dir
+    assert tar_path.exists()
+    manifest_path = out_dir / f"{manifest.build_id}.manifest.json"
+    assert manifest_path.exists()
+    restored = Manifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    assert restored == manifest
+
+
+def test_build_release_bundle_defaults_skip_manifest_json_and_use_dot_harmony_deploy(tmp_path):
+    """The default behaviour (what `push`/`setup` use) must stay unchanged: no stray manifest.json file."""
+    repo = _seed_minimal_repo(tmp_path / "repo")
+
+    manifest, tar_path = build_release_bundle(repo, run_tests_first=False, build_web_first=False)
+
+    assert tar_path.parent == repo / ".harmony-deploy"
+    assert not (repo / ".harmony-deploy" / f"{manifest.build_id}.manifest.json").exists()

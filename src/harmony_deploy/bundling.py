@@ -78,12 +78,18 @@ def build_release_bundle(
     *,
     run_tests_first: bool = True,
     build_web_first: bool = True,
+    out_dir: Optional[Path] = None,
+    write_manifest_json: bool = False,
 ) -> Tuple[Manifest, Path]:
     """Runs tests, builds the web UI, and packs both plus the Python source into one bundle.
 
     Returns the manifest and the tar.gz path -- everything a caller needs
-    either to sign and POST it (`push`) or to upload and unpack it directly
-    (`setup`'s bootstrap case, over SFTP + `tar` instead of HTTP).
+    either to sign and POST it (`push`), to upload and unpack it directly
+    (`setup`'s bootstrap case, over SFTP + `tar` instead of HTTP), or to
+    publish as GitHub release assets (`harmony-deploy build`, used by CI --
+    see `.github/workflows/release.yml`). `write_manifest_json` writes the
+    manifest as its own file next to the tar, since a GitHub release asset
+    has to be an actual file, not a value only ever passed in memory.
     """
     if run_tests_first:
         run_tests(repo_root)
@@ -102,8 +108,8 @@ def build_release_bundle(
         print("No built web UI found -- this bundle will ship code only, keeping the device's current UI")
         web_dir = None
 
-    out_dir = repo_root / ".harmony-deploy"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = Path(out_dir) if out_dir is not None else repo_root / ".harmony-deploy"
+    out_dir.mkdir(parents=True, exist_ok=True)
     tar_path = out_dir / f"{build_id}.tar.gz"
     manifest = build_bundle(
         repo_root,
@@ -116,4 +122,10 @@ def build_release_bundle(
         created_by=created_by(),
     )
     print(f"Built {tar_path} ({manifest.byte_count} bytes, {manifest.file_count} files)")
+
+    if write_manifest_json:
+        manifest_path = out_dir / f"{build_id}.manifest.json"
+        manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
+        print(f"Wrote {manifest_path}")
+
     return manifest, tar_path

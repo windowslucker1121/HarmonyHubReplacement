@@ -39,6 +39,7 @@ class HubStore extends ChangeNotifier {
   HubConfig? config;
   HubSettings? settings;
   VersionInfo? version;
+  UpdateCheckInfo? availableUpdate;
   List<ButtonInfo> buttons = [];
   List<BackendInfo> backends = [];
   final List<HubEvent> events = [];
@@ -63,6 +64,23 @@ class HubStore extends ChangeNotifier {
   bool loading = true;
   bool connected = false;
   String? error;
+
+  /// Whether an install this app kicked off from GitHub (as opposed to a
+  /// signed push from a dev machine) is still running. The hub stays fully
+  /// reachable the whole time -- downloading and `pip install`ing on a Pi
+  /// can take minutes -- so unlike a rollback, which restarts almost
+  /// immediately, nothing else would tell a person this is still happening.
+  bool installingUpdate = false;
+
+  /// The most recent `update`-type event's detail, for [installingUpdate]
+  /// to show as progress. `events` is newest-first, so the first match is
+  /// the most recent.
+  String? get updateProgressDetail {
+    for (final event in events) {
+      if (event.type == 'update') return event.detail;
+    }
+    return null;
+  }
 
   /// Whether the hub itself is up. Every screen reads this to decide between
   /// working normally and explaining why it cannot -- the app stays usable
@@ -118,6 +136,12 @@ class HubStore extends ChangeNotifier {
       version = await api.version();
     } catch (_) {
       // An older hub with no /api/version yet. The Software card just stays hidden.
+    }
+
+    try {
+      availableUpdate = await api.availableUpdate();
+    } catch (_) {
+      // Not deployed, or an older hub with no /api/update/available yet.
     }
 
     loading = false;
@@ -199,6 +223,19 @@ class HubStore extends ChangeNotifier {
     // from here how long a restart will actually take.
     if (event.type == 'hub') {
       refreshVersion();
+      // A restart is exactly the moment "what's installed" may have moved,
+      // so what's still worth offering has to be recomputed against it --
+      // and, whatever kicked this restart off, an install this app was
+      // tracking is no longer "in progress" once it happens.
+      refreshAvailableUpdate();
+      installingUpdate = false;
+    }
+
+    // An install that fails never restarts, so `installingUpdate` has to be
+    // cleared here too -- not just on the "hub" event above -- or the
+    // Software card would show "Installing…" forever after a failure.
+    if (event.type == 'update' && event.ok == false) {
+      installingUpdate = false;
     }
 
     // The engine is the authority on the active scene, so follow its events
@@ -343,8 +380,12 @@ class HubStore extends ChangeNotifier {
   }
 
   // ----------------------------------------------------------------------
-  // Remote update. Pushing new code happens from the dev machine, not here
-  // -- this is just enough to show what is running and offer a rollback.
+  // Remote update. A signed push from a dev machine still needs nothing
+  // from here beyond showing what is running and offering a rollback --
+  // see `refreshVersion`/`loadUpdateHistory`/`rollbackUpdate` below.
+  // `refreshAvailableUpdate`/`checkForUpdate`/`installUpdate` are the pull
+  // side: a release the hub found on GitHub on its own, and this app being
+  // what triggers installing it.
   // ----------------------------------------------------------------------
 
   /// Refreshes just [version], e.g. after reconnecting once a push restarts the hub.
@@ -381,6 +422,61 @@ class HubStore extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+  }
+
+  /// Refreshes just [availableUpdate], from cache -- no network request of its own.
+  Future<void> refreshAvailableUpdate() async {
+    try {
+      availableUpdate = await api.availableUpdate();
+    } catch (_) {
+      // Not deployed, GitHub updates are off, or an older hub. Left as-is.
+    }
+    notifyListeners();
+  }
+
+  /// Asks the hub to check GitHub for a new release right now.
+  Future<void> checkForUpdate() async {
+    try {
+      availableUpdate = await api.checkForUpdate();
+      error = null;
+    } catch (err) {
+      error = '$err';
+    }
+    notifyListeners();
+  }
+
+  /// Starts installing [availableUpdate]. Returns once the install has
+  /// *started*, not once it has finished -- [installingUpdate] and
+  /// [updateProgressDetail] track the rest, driven by `update` events as
+  /// they arrive over the same event stream everything else uses.
+  Future<bool> installUpdate({bool force = false}) async {
+    try {
+      await api.installUpdate(force: force);
+      installingUpdate = true;
+      error = null;
+      notifyListeners();
+      return true;
+    } catch (err) {
+      error = '$err';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Marks [availableUpdate]'s release as dismissed for this browser -- see
+  /// [kDismissedUpdateBuildId]. A later, *different* release still shows.
+  void dismissUpdateBanner() {
+    final buildId = availableUpdate?.available?.buildId;
+    if (buildId == null) return;
+    _prefs?.set(kDismissedUpdateBuildId, buildId);
+    notifyListeners();
+  }
+
+  /// Whether [availableUpdate] names a release this browser has not already dismissed.
+  bool get hasUndismissedUpdate {
+    final buildId = availableUpdate?.available?.buildId;
+    if (buildId == null) return false;
+    return _prefs?.get(kDismissedUpdateBuildId) != buildId;
   }
 
   Future<void> _guard(Future<void> Function() action) async {

@@ -1,0 +1,63 @@
+name: Release
+
+# A `v*` tag is a deliberate "cut a release" action -- unlike an ordinary
+# push to main, every tag push here goes through: test, build, publish.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/tests.yml
+
+  release:
+    name: Build and publish
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.0"
+          channel: stable
+
+      # No `[deploy]` extra: `harmony-deploy build` never touches SSH
+      # (paramiko is imported lazily, only inside `harmony_deploy.ssh`'s
+      # `Connection.open`, which `build` never calls -- see that module's
+      # docstring), so the base install is all this job needs.
+      - name: Install harmony-receiver
+        run: pip install -e .
+
+      - name: Build the release bundle
+        # --no-tests: the `test` job above already gates this job on the
+        # same suite passing for this exact commit; running it again here
+        # would only cost time.
+        run: harmony-deploy build --out dist --no-tests
+
+      - name: Read the build id out of the manifest
+        id: manifest
+        run: |
+          manifest_path=$(ls dist/*.manifest.json)
+          build_id=$(python -c "import json; print(json.load(open('${manifest_path}'))['build_id'])")
+          echo "build_id=${build_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/*.tar.gz dist/*.manifest.json \
+            --title "${{ github.ref_name }} (${{ steps.manifest.outputs.build_id }})" \
+            --generate-notes

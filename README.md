@@ -116,6 +116,13 @@ you fix things without needing a computer expert.
   won't forget it's on.
 - A **"Run checks"** button double-checks that everything is set up
   correctly and tells you if anything's missing.
+- If the hub was set up with the release system, a **Software** card shows
+  what it's running, checks GitHub for a newer version on its own, and
+  offers an **"Update software"** button when one is found — no computer or
+  cable required. It stays reachable the whole time it's downloading and
+  installing, and only goes offline briefly at the very end while it
+  restarts onto the new version. It also rolls itself back automatically if
+  an update ever fails to start up properly.
 
 You never need to close the app to fix a problem — the page you're looking
 at stays open the whole time, even while the program is restarting or
@@ -140,6 +147,14 @@ recovering from an issue.
   blind, a projector lens — needs different timing from all the others,
   open that button in a scene and turn on **Custom timing for this
   button** to set it individually without touching everything else.
+- **Holding a button down longer can make it go faster.** The same
+  **Default repeat timing** dialog has a **Speed up the longer it is
+  held** slider — off by default. Turn it up and a button like Volume
+  starts at the normal repeat rate and ramps up to that many times faster
+  the longer you keep holding it, so a long hold gets you there quickly
+  without a quick tap firing several times too. **Time to reach full
+  speed** controls how long that ramp takes. Like the timing above, it can
+  be overridden per button under **Custom timing for this button**.
 - **The +/- keys always mean "the thing I just touched."** Toggle a light or
   a switch with one of the SmartHome keys, and +/- steps that same thing up
   or down — no need to bind them to one light in particular. The Live tab

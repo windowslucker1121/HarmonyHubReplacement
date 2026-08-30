@@ -413,3 +413,52 @@ Config, `hub_config.json`, `buttons.json`, and `credentials/` are never part
 of a bundle — only `harmony_hub`/`harmony_receiver` source and the built web
 UI move. A push while a scene is active is refused unless you pass
 `--force`, since the update briefly takes the hub down to restart it.
+
+## Updating from a GitHub release
+
+The Pi can also update itself, with nobody at a dev machine at all — every
+push to a `v*` tag on GitHub runs the test suite and, if it passes, builds
+and publishes a release with the same bundle `harmony-deploy push` would
+have built (see [`.github/workflows/release.yml`](.github/workflows/release.yml)).
+The hub checks for one on its own and offers to install it from the app.
+
+This is the pull side of the same release system `harmony-deploy push`
+uses — same bundle format, same `installer.install` doing the actual
+staging/dependency-install/smoke-test/activate, same automatic rollback if
+a release keeps failing to boot. The only thing that differs is how the
+bytes arrive: over a signed HTTP push from a dev machine, or downloaded
+directly from a GitHub release. See
+[`src/harmony_hub/update/source.py`](src/harmony_hub/update/source.py) and
+[`check.py`](src/harmony_hub/update/check.py) for how it works.
+
+- **Settings that control it**, in `hub_settings.json` — all three editable
+  from the Settings tab, no restart needed:
+  - `github_updates_enabled` (default on) — whether the hub checks GitHub
+    at all.
+  - `github_repo` (default `windowslucker1121/HarmonyHubReplacement`) —
+    which repo's releases to watch.
+  - `update_check_interval_hours` (default 6, `0` disables automatic
+    checking) — how often the hub checks on its own; "Check for updates"
+    in Settings always works on demand regardless.
+- **No signature required**, unlike a push. There is no second party to
+  sign with — GitHub's own TLS stands in for it, the same way
+  `/api/update/rollback` already needs no signature: at worst a LAN
+  attacker can make the hub install a release the configured repo actually
+  published, not arbitrary code. Turn `github_updates_enabled` off for a
+  hub that should only ever take a signed push.
+- **Installing** downloads and installs in the background and returns
+  immediately — the download plus `pip install` can take several minutes
+  on a Pi, and the hub stays fully reachable the whole time. Progress shows
+  up as `update` events in the Live log and on the Software card, the same
+  way a push's progress does; the hub only goes briefly unreachable at the
+  very end, while it restarts onto the new release.
+- **Publishing a release yourself** (maintainers): tag a commit that has
+  already passed CI and push the tag —
+  ```bash
+  git tag v1.5.0
+  git push origin v1.5.0
+  ```
+  CI runs the full test suite again on that exact commit, then runs
+  `harmony-deploy build --out dist` and attaches `dist/*.tar.gz` and
+  `dist/*.manifest.json` to a GitHub release named after the tag. A hub
+  checking that repo picks it up on its next check.

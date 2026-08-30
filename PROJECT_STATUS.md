@@ -278,12 +278,40 @@ copy on each one would mean tuning them all by hand for one preference.
 `Binding.repeat_delay` / `repeat_interval` exist too, but only as an
 `Optional[float]` override for the one button, usually something slow like a
 blind or a projector lens, that genuinely needs different timing; `None` (the
-default) follows the config-wide setting. The engine resolves this once per
-repeat in `SceneEngine._should_repeat`. The app exposes the config-wide pair
-from the Scenes tab, next to the global scene picker, and the per-button
-override as a "Custom timing for this button" switch in the binding editor
-that starts from the current default rather than zero, so turning it on does
-not itself change what the button does.
+default) follows the config-wide setting. The app exposes the config-wide
+pair from the Scenes tab, next to the global scene picker, and the
+per-button override as a "Custom timing for this button" switch in the
+binding editor that starts from the current default rather than zero, so
+turning it on does not itself change what the button does.
+
+`default_repeat_accel` / `default_repeat_accel_seconds` (and their
+per-`Binding` overrides `repeat_accel` / `repeat_accel_seconds`, same
+override convention as above) layer an exponential ramp on top of the flat
+rate: the longer a button stays held, the faster it fires, up to
+`repeat_accel` times the base rate once `repeat_accel_seconds` of holding
+has passed. `repeat_accel` at `1.0` (the default) disables this entirely.
+It exists because the flat rate alone tops out at the remote's own ~100ms
+reporting cadence -- `default_repeat_interval` at its default of `0`
+already fires on every packet the remote sends, with no headroom left to go
+faster by shrinking the gap further. Past that ceiling the only way to go
+faster is to run the repeat actions more than once for a single packet, so
+`SceneEngine._repeats_due` (renamed from `_should_repeat`, since it now
+returns a count rather than a bool) returns 0, 1, or more per packet: a
+`_credits` accumulator banks fractional progress between packets so the
+count climbs smoothly instead of jumping in whole-repeat steps, and
+`_ramp_elapsed` tracks how long the ramp itself has been running --
+separately from wall-clock "time held" -- so a burst of packets queued up
+behind a slow backend cannot all cash in at the top of the ramp the instant
+the backend catches up (that gap is additionally capped per-packet by
+`MAX_REPEAT_DT`). `MAX_REPEAT_BURST` (8) hard-caps how many times one
+packet may fire, whatever `repeat_accel` is configured to. `run_actions`
+gained `announce` / `label_suffix` kwargs so a wide burst logs once, as
+`"volume_up ×8"`, instead of flooding the live view with one entry per
+underlying command -- failures are never silenced, on any iteration of a
+burst. The app exposes this the same way as the flat rate: two more
+sliders in the "Default repeat timing" dialog and the per-button "Custom
+timing for this button" section, the second only shown once the first is
+above `1×`.
 
 An **action** is one of `device` (send a command), `scene` (switch or stop),
 or `delay`. Scene switching being an ordinary action is what lets the
@@ -706,8 +734,9 @@ exist for.
   `reload()` dropping the device that set it. Which light was last touched
   has nothing to do with which scene is running.
 * **Repeat timing is not special-cased.** An adjust binding follows the same
-  `default_repeat_delay` / `default_repeat_interval` (or its own override)
-  as any other binding -- no new setting was added for this.
+  `default_repeat_delay` / `default_repeat_interval` / `default_repeat_accel`
+  / `default_repeat_accel_seconds` (or its own override) as any other
+  binding -- no new setting was added for this.
 * **`GET /api/state` reports the focus** as `{device, target, label,
   can_adjust}`, and `GET /api/devices/{id}/suggested_bindings` returns an
   `adjust` map (button key to `"up"`/`"down"`) alongside the usual
@@ -921,10 +950,63 @@ in a startup log line. During app development, `flutter run -d chrome` talks
 to a hub on the default port; override with
 `--dart-define=API_BASE=http://host:8765`.
 
-59 widget and serialisation tests. The widget tests build the real tree
+152 widget and serialisation tests. The widget tests build the real tree
 against a fake hub, which is the only automated check that the app actually
 runs rather than merely being served -- they caught a phone-width layout
-overflow that a browser check at desktop size would have missed.
+overflow that a browser check at desktop size would have missed, and, most
+recently, a pushed Settings sub-page that only listened for its own local
+edits and never re-rendered on a live store event (see below).
+
+## Release and remote update (`src/harmony_hub/update/`, `.github/workflows/`)
+
+Two ways for new code to reach an already-deployed hub, sharing everything
+past "where the bytes come from": the same allowlisted, signed-content-hash
+bundle format (`update/manifest.py`, `update/bundle.py`), the same
+stage/dependency-install/smoke-test/activate pipeline (`update/installer.py`),
+the same versioned release directories and boot-time trial/rollback bookkeeping
+(`update/state.py`, `update/launcher.py`). Config, `hub_config.json`,
+`buttons.json`, and `credentials/` never leave a dev machine or a CI runner
+either way -- the allowlist is the only thing that decides what goes in a
+bundle, and it is deliberately a positive list, not a blocklist.
+
+- **Push**, from a dev machine: `harmony-deploy push <target>` builds a
+  bundle, signs it with an HMAC over the device's own update token
+  (`update/auth.py`; the token itself never crosses the wire), and POSTs it
+  to `/api/update`. This is the original mechanism and the one
+  `harmony-deploy setup`'s SSH-based provisioning still uses to bootstrap a
+  bare device.
+- **Pull**, from GitHub, added alongside it: the hub itself checks a
+  configured repo's releases (`update/source.py`, read-only against
+  GitHub's REST API) on an interval (`update/check.py`, cached in
+  `data/update_check.json` so `/api/update/available` costs nothing to
+  poll), and the Settings screen's Software card offers an "Update
+  software" button once it finds one. Installing downloads the release
+  asset in the background and hands it to the same `installer.install`
+  a push uses -- see `RASPBERRY_PI_DEPLOYMENT.md`'s "Updating from a
+  GitHub release" for the operational side.
+
+  No HMAC on this path -- there is no second party to sign with, only
+  GitHub's TLS standing behind "this is really what the configured repo
+  published." Accepted deliberately: the same risk class as
+  `/api/update/rollback`, which already needs no signature, and turned off
+  independently of the push path via `github_updates_enabled`.
+
+  `.github/workflows/release.yml` is what actually publishes a release: a
+  push to a `v*` tag runs the full test suite
+  (`.github/workflows/tests.yml`, shared with `ci.yml`'s pull-request runs)
+  and, once it passes, runs `harmony-deploy build` -- the same bundle-building
+  code path `push`/`setup` use -- and attaches the resulting `.tar.gz` and
+  `.manifest.json` as release assets.
+
+Caught during this work, both since fixed: the web build's asset allowlist
+used a fixed number of `web/*/*/...` glob levels and silently dropped any
+file nested deeper (a real Flutter package asset sat exactly at that depth);
+and a download failure during a GitHub-sourced install surfaced as an opaque
+"unexpected error" instead of the same `ReleaseFeedError` message a failed
+release-check already produces, because `update.source.download` did not
+wrap `httpx` errors the way `fetch_latest` did. Both were caught by driving
+the real app against a real (if fixture-seeded) deployed hub in a browser,
+not by the unit tests alone.
 
 ## Open items
 

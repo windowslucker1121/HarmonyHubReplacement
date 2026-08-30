@@ -49,6 +49,8 @@ const Map<String, dynamic> fullConfig = {
           // An explicit override for this one button.
           'repeat_delay': 0.2,
           'repeat_interval': 0.1,
+          'repeat_accel': 4.0,
+          'repeat_accel_seconds': 1.5,
         },
         'power': {
           'on_press': [
@@ -61,6 +63,8 @@ const Map<String, dynamic> fullConfig = {
           // No override: this button follows the config-wide default below.
           'repeat_delay': null,
           'repeat_interval': null,
+          'repeat_accel': null,
+          'repeat_accel_seconds': null,
         },
       },
     }
@@ -70,6 +74,8 @@ const Map<String, dynamic> fullConfig = {
   'default_scene': null,
   'default_repeat_delay': 0.5,
   'default_repeat_interval': 0.0,
+  'default_repeat_accel': 1.0,
+  'default_repeat_accel_seconds': 3.0,
 };
 
 void main() {
@@ -178,6 +184,15 @@ void main() {
 
       expect(binding.repeatDelay, isNull);
       expect(binding.repeatInterval, isNull);
+      expect(binding.repeatAccel, isNull);
+      expect(binding.repeatAccelSeconds, isNull);
+    });
+
+    test('repeat acceleration defaults to off on a fresh config', () {
+      final config = HubConfig();
+
+      expect(config.defaultRepeatAccel, 1.0);
+      expect(config.defaultRepeatAccelSeconds, 3.0);
     });
   });
 
@@ -204,6 +219,9 @@ void main() {
       'ir_pigpio_host': 'localhost',
       'ir_pigpio_port': 8888,
       'verbose': false,
+      'github_updates_enabled': false,
+      'github_repo': 'someone/somewhere',
+      'update_check_interval_hours': 12.0,
     };
 
     test('settings survive a round trip unchanged', () {

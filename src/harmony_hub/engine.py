@@ -46,6 +46,19 @@ MAX_ACTION_DEPTH = 5
 # must not hold up the rest of the macro or the next button press.
 ACTION_TIMEOUT = 15.0
 
+# Hard ceiling on how many times one repeat packet may fire the repeat
+# actions, however high `repeat_accel` climbs. Not a setting -- a backstop
+# against a misconfigured ramp flooding a backend.
+MAX_REPEAT_BURST = 8
+
+# The most real time a single repeat packet may be credited with, whether
+# for the acceleration ramp or the fractional-repeat accumulator. Bounds how
+# big a catch-up burst a backend stall (or a queue backlog) can produce once
+# it clears -- without this, a `now - last` grown large while nothing was
+# actually being processed would otherwise be spent all at once the moment
+# processing resumes.
+MAX_REPEAT_DT = 0.5
+
 
 @dataclass(frozen=True)
 class Focus:
@@ -107,6 +120,13 @@ class SceneEngine:
         self._press_at: Dict[str, float] = {}
         self._repeat_at: Dict[str, float] = {}
 
+        # Fractional repeats saved up between packets once acceleration has
+        # pushed the rate past one repeat per packet, and how long the ramp
+        # itself has been running -- see `_repeats_due`. Both cleared
+        # alongside the two dicts above.
+        self._credits: Dict[str, float] = {}
+        self._ramp_elapsed: Dict[str, float] = {}
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -124,6 +144,8 @@ class SceneEngine:
         self._pending.clear()
         self._press_at.clear()
         self._repeat_at.clear()
+        self._credits.clear()
+        self._ramp_elapsed.clear()
         self._focus = None
         await self._close_backends()
 
@@ -373,23 +395,43 @@ class SceneEngine:
         elif event.kind == "repeat":
             # While a hold decision is outstanding the press has not been
             # dispatched yet, so repeating it would fire actions out of order.
-            if key not in self._pending and self._should_repeat(key, binding):
-                await self.run_actions(binding.on_repeat, source=f"{key}.repeat")
+            if key not in self._pending:
+                count = self._repeats_due(key, binding)
+                for i in range(count):
+                    await self.run_actions(
+                        binding.on_repeat,
+                        source=f"{key}.repeat",
+                        announce=(i == 0),
+                        label_suffix=f" ×{count}" if i == 0 and count > 1 else "",
+                    )
         elif event.kind == "release":
             await self._on_release(key, binding)
 
-    def _should_repeat(self, key: str, binding: Binding) -> bool:
-        """Whether this packet is a genuine auto-repeat rather than one press.
+    def _repeats_due(self, key: str, binding: Binding) -> int:
+        """How many times this packet's repeat actions should fire.
 
-        The remote reports a held button roughly every 100ms and says nothing
-        about how long it has been down, so without a delay an ordinary
-        300ms press fires the repeat actions three times over. Waiting is the
-        only thing that distinguishes "held" from "pressed" -- the same
-        reason a keyboard waits before it starts repeating a character.
+        Ordinarily 0 or 1: the remote reports a held button roughly every
+        100ms and says nothing about how long it has been down, so without a
+        delay an ordinary 300ms press fires the repeat actions three times
+        over. Waiting is the only thing that distinguishes "held" from
+        "pressed" -- the same reason a keyboard waits before it starts
+        repeating a character.
 
-        A binding that leaves `repeat_delay` / `repeat_interval` unset -- the
-        common case -- follows the config-wide default instead. Only a
-        binding that sets its own overrides it.
+        `repeat_accel` layers a ramp on top of that. The remote never reports
+        a held button any faster than that ~100ms cadence, so once
+        `repeat_interval` is already at that ceiling there is no faster
+        packet to wait for -- the only way to go faster still is to run the
+        repeat actions more than once for a single packet. `_credits` banks
+        fractional progress between packets so the count climbs smoothly
+        rather than jumping in whole-repeat steps, and `_ramp_elapsed` tracks
+        how long the ramp itself has been running -- separately from
+        wall-clock "time held" -- so a burst of packets queued up behind a
+        slow backend cannot all cash in at the top of the ramp the instant
+        the backend catches up.
+
+        A binding that leaves any of these unset -- the common case --
+        follows the config-wide default instead. Only a binding that sets
+        its own overrides it.
         """
         delay = binding.repeat_delay
         if delay is None:
@@ -397,6 +439,12 @@ class SceneEngine:
         interval = binding.repeat_interval
         if interval is None:
             interval = self.config.default_repeat_interval
+        accel = binding.repeat_accel
+        if accel is None:
+            accel = self.config.default_repeat_accel
+        accel_seconds = binding.repeat_accel_seconds
+        if accel_seconds is None:
+            accel_seconds = self.config.default_repeat_accel_seconds
 
         now = time.monotonic()
         # A repeat with no press behind it -- the press packet was lost, or
@@ -404,18 +452,47 @@ class SceneEngine:
         # starting now, so the ramp is late rather than instant.
         started = self._press_at.setdefault(key, now)
         if now - started < delay:
-            return False
+            return 0
 
         last = self._repeat_at.get(key)
-        if last is not None and now - last < interval:
-            return False
-
         self._repeat_at[key] = now
-        return True
+        if last is None:
+            # The first packet past the delay always fires exactly once --
+            # there is no real "since last packet" gap yet to build a rate
+            # or a ramp from, and a plain (non-accelerated) binding should
+            # behave exactly as it always has.
+            self._credits[key] = 0.0
+            self._ramp_elapsed[key] = 0.0
+            return 1
+
+        dt = min(now - last, MAX_REPEAT_DT)
+
+        multiplier = 1.0
+        if accel > 1.0:
+            ramp = self._ramp_elapsed.get(key, 0.0) + dt
+            self._ramp_elapsed[key] = ramp
+            progress = min(ramp / accel_seconds, 1.0)
+            multiplier = accel**progress
+
+        if interval > 0:
+            gain = dt / interval
+        else:
+            # No throttle: one credit per packet at the base rate,
+            # independent of exactly how far apart packets land -- real
+            # packet spacing jitters by a few milliseconds and must not gate
+            # whether this fires.
+            gain = 1.0
+
+        credits = self._credits.get(key, 0.0) + gain * multiplier
+        count = min(int(credits), MAX_REPEAT_BURST)
+        self._credits[key] = credits - count
+        return count
 
     async def _on_press(self, key: str, binding: Binding) -> None:
         self._press_at[key] = time.monotonic()
         self._repeat_at.pop(key, None)
+        self._credits.pop(key, None)
+        self._ramp_elapsed.pop(key, None)
 
         if not binding.on_hold:
             await self.run_actions(binding.on_press, source=f"{key}.press")
@@ -440,6 +517,8 @@ class SceneEngine:
     async def _on_release(self, key: str, binding: Binding) -> None:
         self._press_at.pop(key, None)
         self._repeat_at.pop(key, None)
+        self._credits.pop(key, None)
+        self._ramp_elapsed.pop(key, None)
 
         task = self._pending.pop(key, None)
         if task is not None:
@@ -453,7 +532,15 @@ class SceneEngine:
     # Actions
     # ------------------------------------------------------------------
 
-    async def run_actions(self, actions: List[Action], source: str, depth: int = 0) -> None:
+    async def run_actions(
+        self,
+        actions: List[Action],
+        source: str,
+        depth: int = 0,
+        *,
+        announce: bool = True,
+        label_suffix: str = "",
+    ) -> None:
         """Runs a macro in order, reporting each step.
 
         Errors are reported and the macro continues. A power-on that fails
@@ -466,30 +553,51 @@ class SceneEngine:
         -- passes through here on its way to a backend, so gating here
         (rather than earlier, at the button-handling level) is what also
         catches a hold timer that was already armed before pausing.
+
+        `announce` and `label_suffix` exist for an accelerated repeat burst:
+        `_repeats_due` can call this several times for one packet, and
+        logging every one of those individually would flood the live view
+        for no benefit -- a `SwitchListTile` slider does not need proof that
+        volume went up eight times instead of four. The first call in a
+        burst passes `label_suffix=" ×8"` so the log shows what actually
+        happened; the rest pass `announce=False` and run silently. Failures
+        are never silenced, on any call -- something going wrong is exactly
+        what the log is for.
         """
         if self.paused:
-            for action in actions:
-                self._publish(
-                    HubEvent(type="action", action=action.describe(), ok=True, detail=f"{source}: paused -- not executed")
-                )
+            if announce:
+                for action in actions:
+                    self._publish(
+                        HubEvent(
+                            type="action",
+                            action=action.describe() + label_suffix,
+                            ok=True,
+                            detail=f"{source}: paused -- not executed",
+                        )
+                    )
             return
 
         if depth > MAX_ACTION_DEPTH:
-            self._publish(
-                HubEvent(type="action", ok=False, detail=f"{source}: scene actions nested too deeply, stopping")
-            )
+            if announce:
+                self._publish(
+                    HubEvent(type="action", ok=False, detail=f"{source}: scene actions nested too deeply, stopping")
+                )
             return
 
         for action in actions:
             try:
-                await self._run_action(action, source, depth)
+                await self._run_action(action, source, depth, announce=announce, label_suffix=label_suffix)
             except Exception as err:
                 logger.exception("%s: %s failed", source, action.describe())
                 self._publish(
-                    HubEvent(type="action", action=action.describe(), ok=False, detail=f"{source}: {err}")
+                    HubEvent(
+                        type="action", action=action.describe() + label_suffix, ok=False, detail=f"{source}: {err}"
+                    )
                 )
 
-    async def _run_action(self, action: Action, source: str, depth: int) -> None:
+    async def _run_action(
+        self, action: Action, source: str, depth: int, *, announce: bool = True, label_suffix: str = ""
+    ) -> None:
         if isinstance(action, DelayAction):
             await asyncio.sleep(action.seconds)
             return
@@ -504,7 +612,7 @@ class SceneEngine:
             return
 
         if isinstance(action, AdjustAction):
-            await self._run_adjust(action, source)
+            await self._run_adjust(action, source, announce=announce, label_suffix=label_suffix)
             return
 
         assert isinstance(action, DeviceAction)
@@ -513,7 +621,8 @@ class SceneEngine:
             raise KeyError(f"device '{action.device}' is not running")
 
         await asyncio.wait_for(backend.send(action.command, action.params), timeout=ACTION_TIMEOUT)
-        self._publish(HubEvent(type="action", action=action.describe(), ok=True, detail=source))
+        if announce:
+            self._publish(HubEvent(type="action", action=action.describe() + label_suffix, ok=True, detail=source))
         self._update_focus(action.device, backend, action.command)
 
     def _update_focus(self, device_id: str, backend: "backends.Backend", command: str) -> None:
@@ -535,7 +644,9 @@ class SceneEngine:
         self._focus = Focus(device=device_id, target=target.target, label=target.label)
         self._publish(HubEvent(type="status", detail=f"SmartHome +/- now follow {target.label}"))
 
-    async def _run_adjust(self, action: AdjustAction, source: str) -> None:
+    async def _run_adjust(
+        self, action: AdjustAction, source: str, *, announce: bool = True, label_suffix: str = ""
+    ) -> None:
         """Steps whatever is focused, up or down.
 
         Falls back to the action's own `device`/`target` only when nothing
@@ -560,9 +671,10 @@ class SceneEngine:
             raise backends.BackendError(f"{label} has nothing to turn {action.direction}")
 
         await asyncio.wait_for(backend.send(command), timeout=ACTION_TIMEOUT)
-        self._publish(
-            HubEvent(
-                type="action", action=f"{device_id}.{command}", ok=True,
-                detail=f"{source} · following {label}",
+        if announce:
+            self._publish(
+                HubEvent(
+                    type="action", action=f"{device_id}.{command}{label_suffix}", ok=True,
+                    detail=f"{source} · following {label}",
+                )
             )
-        )

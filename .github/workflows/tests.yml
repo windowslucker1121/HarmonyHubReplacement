@@ -1,0 +1,60 @@
+name: Tests
+
+# Reusable: both ci.yml (every PR) and release.yml (every v* tag) call this
+# so "what does it mean for this repo to pass" is defined in exactly one
+# place. Not triggered directly -- see `on: workflow_call` below.
+on:
+  workflow_call:
+
+jobs:
+  python:
+    name: Python (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor pyproject.toml declares (`requires-python`);
+        # 3.13 is what local dev runs on -- see pyproject.toml.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # `deploy` pulls in paramiko, which only `harmony-deploy setup`/
+      # `inspect` need -- installed here anyway so those code paths still
+      # import cleanly under test, the same way a dev machine would have it.
+      - name: Install harmony-receiver
+        run: pip install -e ".[dev,deploy]"
+
+      - name: Run the test suite
+        run: pytest -q
+
+  flutter:
+    name: Flutter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Pinned to what local dev runs (`flutter --version`), not
+          # "stable", so CI does not start failing on a Flutter release
+          # nobody here has tested against yet.
+          flutter-version: "3.41.0"
+          channel: stable
+
+      - name: Install app dependencies
+        run: flutter pub get
+        working-directory: app
+
+      - name: Analyze
+        run: flutter analyze
+        working-directory: app
+
+      - name: Run the widget/unit tests
+        run: flutter test
+        working-directory: app

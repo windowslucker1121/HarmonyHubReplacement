@@ -71,7 +71,10 @@ class _BindingEditorPageState extends State<BindingEditorPage> {
   void initState() {
     super.initState();
     _binding = widget.binding.copy();
-    _customRepeatTiming = _binding.repeatDelay != null || _binding.repeatInterval != null;
+    _customRepeatTiming = _binding.repeatDelay != null ||
+        _binding.repeatInterval != null ||
+        _binding.repeatAccel != null ||
+        _binding.repeatAccelSeconds != null;
   }
 
   void _setCustomRepeatTiming(bool custom) {
@@ -83,9 +86,13 @@ class _BindingEditorPageState extends State<BindingEditorPage> {
         // does not silently change the button's behaviour.
         _binding.repeatDelay ??= widget.config.defaultRepeatDelay;
         _binding.repeatInterval ??= widget.config.defaultRepeatInterval;
+        _binding.repeatAccel ??= widget.config.defaultRepeatAccel;
+        _binding.repeatAccelSeconds ??= widget.config.defaultRepeatAccelSeconds;
       } else {
         _binding.repeatDelay = null;
         _binding.repeatInterval = null;
+        _binding.repeatAccel = null;
+        _binding.repeatAccelSeconds = null;
       }
     });
   }
@@ -100,7 +107,11 @@ class _BindingEditorPageState extends State<BindingEditorPage> {
         ? 'repeats from the first packet'
         : 'waits ${delay.toStringAsFixed(1)}s before repeating';
     final paced = interval == 0 ? '' : ', at most once every ${interval.toStringAsFixed(1)}s';
-    return 'Follows the remote-wide default: $waits$paced.';
+    final accel = config.defaultRepeatAccel > 1
+        ? ', speeding up to ${config.defaultRepeatAccel.toStringAsFixed(0)}× after '
+            '${config.defaultRepeatAccelSeconds.toStringAsFixed(1)}s held'
+        : '';
+    return 'Follows the remote-wide default: $waits$paced$accel.';
   }
 
   void _setPhase(String phase, List<HubAction> actions) {
@@ -120,6 +131,15 @@ class _BindingEditorPageState extends State<BindingEditorPage> {
 
   @override
   Widget build(BuildContext context) {
+    // A binding saved before repeat acceleration existed can have
+    // `repeatDelay`/`repeatInterval` set with `repeatAccel` still null --
+    // custom timing is on, but this particular pair has never been touched.
+    // Falling back to the config-wide default for display (rather than
+    // writing it into `_binding` just because the page opened) keeps
+    // "opened, then hit Done" a no-op.
+    final repeatAccel = _binding.repeatAccel ?? widget.config.defaultRepeatAccel;
+    final repeatAccelSeconds = _binding.repeatAccelSeconds ?? widget.config.defaultRepeatAccelSeconds;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.buttonLabel),
@@ -234,6 +254,34 @@ class _BindingEditorPageState extends State<BindingEditorPage> {
                             : 'At most once every ${_binding.repeatInterval!.toStringAsFixed(1)}s '
                                 'while held.',
                       ),
+                      const SizedBox(height: 8),
+                      LabeledSlider(
+                        label: 'Speed up the longer it is held',
+                        value: repeatAccel,
+                        min: 1,
+                        max: 16,
+                        divisions: 15,
+                        onChanged: (value) => setState(() => _binding.repeatAccel = value),
+                        formatValue: (v) => v <= 1 ? 'off' : '${v.toStringAsFixed(0)}×',
+                        description: repeatAccel <= 1
+                            ? 'Off: repeats stay at the rate set above for as long as the button '
+                                'is held.'
+                            : 'Ramps up to ${repeatAccel.toStringAsFixed(0)}× that rate '
+                                'the longer the button stays down.',
+                      ),
+                      if (repeatAccel > 1) ...[
+                        const SizedBox(height: 8),
+                        LabeledSlider(
+                          label: 'Time to reach full speed',
+                          value: repeatAccelSeconds,
+                          min: 0.5,
+                          max: 10.0,
+                          divisions: 19,
+                          onChanged: (value) => setState(() => _binding.repeatAccelSeconds = value),
+                          description: 'The button must stay held this long before repeats reach '
+                              '${repeatAccel.toStringAsFixed(0)}×.',
+                        ),
+                      ],
                     ],
                   ],
                 ),

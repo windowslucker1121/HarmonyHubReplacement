@@ -106,6 +106,24 @@ def test_the_web_build_is_spliced_in_under_the_packaged_ui_path(fake_repo, tmp_p
     assert "src/harmony_hub/web/main.dart.js" in names
 
 
+def test_a_deeply_nested_web_asset_is_not_dropped(fake_repo, tmp_path):
+    """Regression test: a fixed number of `web/*/*/...` glob levels used to
+    silently exclude anything past that depth -- see `manifest.WEB_PREFIX`.
+    """
+    web_dir = tmp_path / "flutter_web_output"
+    deep = web_dir / "assets" / "packages" / "cupertino_icons" / "assets"
+    deep.mkdir(parents=True)
+    (deep / "CupertinoIcons.ttf").write_bytes(b"\x00\x01\x02")
+
+    output = tmp_path / "bundle.tar.gz"
+    build_bundle(fake_repo, output, build_id="test-build", web_dir=web_dir, web_build_id="test-build")
+
+    with tarfile.open(output, "r:gz") as tar:
+        names = set(tar.getnames())
+
+    assert "src/harmony_hub/web/assets/packages/cupertino_icons/assets/CupertinoIcons.ttf" in names
+
+
 def test_a_web_dir_that_does_not_exist_is_refused_rather_than_silently_skipped(fake_repo, tmp_path):
     with pytest.raises(FileNotFoundError):
         build_bundle(fake_repo, tmp_path / "bundle.tar.gz", build_id="x", web_dir=tmp_path / "nope")
@@ -157,6 +175,12 @@ def test_build_id_is_sortable_and_reflects_dirty_state():
         ("src/harmony_hub/__pycache__/server.cpython-313.pyc", False),
         ("../../etc/passwd", False),
         ("src/harmony_hub/../../../etc/passwd", False),
+        ("src/harmony_hub/web/index.html", True),
+        # The web build must be allowed at any nesting depth -- a Flutter
+        # package's own bundled assets directory can go arbitrarily deep,
+        # and a fixed number of glob levels would silently drop it.
+        ("src/harmony_hub/web/assets/packages/cupertino_icons/assets/CupertinoIcons.ttf", True),
+        ("src/harmony_hub/web/a/b/c/d/e/f/g/h/deep.txt", True),
     ],
 )
 def test_is_allowed_matches_the_allowlist(path, expected):

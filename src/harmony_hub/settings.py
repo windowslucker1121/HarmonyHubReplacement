@@ -99,6 +99,26 @@ class HubSettings(Base):
     #: the network at all.
     updates_enabled: bool = True
 
+    #: Whether this hub checks GitHub for a new release at all -- the pull
+    #: counterpart to `updates_enabled` above, and independent of it: a hub
+    #: can accept a signed push while never phoning GitHub, or vice versa.
+    #: Off for the same reasons `updates_enabled` might be: no WAN, or a
+    #: person who would rather decide when code changes than have the hub
+    #: notice on its own. See `harmony_hub.update.source`/`check`.
+    github_updates_enabled: bool = True
+
+    #: `owner/name` on GitHub. The release feed is read-only and
+    #: unauthenticated (see `update.source`'s module docstring for the
+    #: trust model this implies), so this only ever needs to be a public
+    #: repository's name.
+    github_repo: str = "windowslucker1121/HarmonyHubReplacement"
+
+    #: How often the background poller checks for a new release. `0`
+    #: disables automatic checking -- the Settings screen's "Check for
+    #: updates" button still works, since it calls the same route on
+    #: demand rather than through this interval.
+    update_check_interval_hours: float = Field(default=6.0, ge=0, le=168)
+
     @field_validator("address")
     @classmethod
     def _check_address(cls, value: Optional[str]) -> Optional[str]:
@@ -121,6 +141,14 @@ class HubSettings(Base):
         if value is not None and value not in HARMONY_CHANNELS:
             raise ValueError(f"channel must be one of {HARMONY_CHANNELS}")
         return value
+
+    @field_validator("github_repo")
+    @classmethod
+    def _check_github_repo(cls, value: str) -> str:
+        owner, sep, name = value.strip().partition("/")
+        if not sep or not owner or not name or "/" in name:
+            raise ValueError("github_repo must look like 'owner/name', e.g. 'windowslucker1121/HarmonyHubReplacement'")
+        return f"{owner}/{name}"
 
     # ------------------------------------------------------------------
 

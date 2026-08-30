@@ -53,9 +53,11 @@ from .models import HubConfig
 from .runtime import ConfigUnreadable, HubRuntime, RuntimeStatus
 from .settings import HubSettings
 from .update import auth as update_auth
+from .update import check as update_check
 from .update import confirm as update_confirm
 from .update import installer as update_installer
 from .update import manifest as update_manifest
+from .update import source as update_source
 from .update import state as update_state_module
 
 logger = logging.getLogger("HUB.api")
@@ -234,6 +236,11 @@ class VersionInfo(BaseModel):
     previous: Optional[str] = None
     trial: Optional[TrialInfo] = None
     token_fingerprint: Optional[str] = None
+    #: Whether this hub also checks GitHub for a release on its own -- the
+    #: pull counterpart to `updates_enabled`, independent of it. Lets the
+    #: Software card show or hide the "Check for updates" button without a
+    #: second round trip to `/api/settings`.
+    updates_from_github: bool = False
 
 
 class UpdateResult(BaseModel):
@@ -250,6 +257,30 @@ class UpdateHistoryEntry(BaseModel):
     build_id: str
     installed_at: str
     outcome: str
+
+
+class AvailableUpdateInfo(BaseModel):
+    """One GitHub release worth installing -- the fields `update_source.AvailableRelease` carries, flattened."""
+
+    tag: str
+    build_id: str
+    published_at: str = ""
+    notes: str = ""
+    git_sha: str = ""
+    tar_bytes: int = 0
+
+
+class UpdateCheckInfo(BaseModel):
+    """What the last GitHub release check found -- served from cache; see `update.check`."""
+
+    last_checked_at: Optional[str] = None
+    last_error: Optional[str] = None
+    available: Optional[AvailableUpdateInfo] = None
+
+
+class GithubInstallResult(BaseModel):
+    build_id: str
+    started: bool
 
 
 def create_app(
@@ -293,16 +324,26 @@ def create_app(
         # regardless of whether the hub itself came up -- a `failed` runtime
         # state must never look like a bad deploy. See `update/confirm.py`.
         confirm_task = None
+        check_poll_task = None
         if update_root is not None:
             confirm_task = asyncio.create_task(update_confirm.schedule_confirmation(update_root))
+            # `lambda: runtime.settings` rather than `runtime.settings` itself:
+            # `apply_settings` reassigns that attribute in place on every save
+            # (see `HubRuntime.apply_settings`), so the poller has to read it
+            # fresh on every wake-up to notice a changed repo, interval, or
+            # the feature being switched off -- see `update.check.poll_forever`.
+            check_poll_task = asyncio.create_task(
+                update_check.poll_forever(update_root, lambda: runtime.settings, broker=runtime.broker)
+            )
 
         try:
             yield
         finally:
-            if confirm_task is not None:
-                confirm_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await confirm_task
+            for task in (confirm_task, check_poll_task):
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
             await runtime.stop()
 
     app = FastAPI(title="Harmony Hub", version="0.1.0", lifespan=lifespan)
@@ -678,7 +719,11 @@ def create_app(
     async def get_version() -> VersionInfo:
         """What this hub is running. Answers even while the hub itself is `failed` -- see lifespan above."""
         if update_root is None:
-            return VersionInfo(deployed=False, updates_enabled=runtime.settings.updates_enabled)
+            return VersionInfo(
+                deployed=False,
+                updates_enabled=runtime.settings.updates_enabled,
+                updates_from_github=runtime.settings.github_updates_enabled,
+            )
 
         state = update_state_module.load(_update_state_path())
         manifest_obj = _read_release_manifest(state.current) if state.current else None
@@ -701,6 +746,7 @@ def create_app(
             previous=state.previous,
             trial=TrialInfo(**state.trial.model_dump(by_alias=False)) if state.trial else None,
             token_fingerprint=token_fp,
+            updates_from_github=runtime.settings.github_updates_enabled,
         )
 
     @app.post("/api/update", response_model=UpdateResult, status_code=202)
@@ -793,6 +839,120 @@ def create_app(
         runtime.broker.publish(HubEvent(type="update", ok=True, detail=f"Rolling back to {new_state.current}"))
         _request_restart()
         return UpdateResult(build_id=new_state.current, restarting=True)
+
+    # ------------------------------------------------------------------
+    # Updating from a GitHub release
+    #
+    # The pull counterpart to the signed-push routes above: no HMAC, since
+    # there is no second party to sign with -- see `update.source`'s module
+    # docstring for the trust model this relies on instead. Everything past
+    # "which bytes to fetch" is identical to a push: the same `update_lock`,
+    # the same `installer.install`, the same `update` events in the Live log.
+    # ------------------------------------------------------------------
+
+    def _update_check_state_path() -> Path:
+        return update_check.state_path(update_root)
+
+    def _to_check_info(state: "update_check.CheckState") -> UpdateCheckInfo:
+        available = None
+        if state.available is not None:
+            available = AvailableUpdateInfo(
+                tag=state.available.tag,
+                build_id=state.available.build_id,
+                published_at=state.available.published_at,
+                notes=state.available.notes,
+                git_sha=state.available.manifest.git_sha,
+                tar_bytes=state.available.tar_bytes,
+            )
+        return UpdateCheckInfo(last_checked_at=state.last_checked_at, last_error=state.last_error, available=available)
+
+    @app.get("/api/update/available", response_model=UpdateCheckInfo)
+    async def get_available_update() -> UpdateCheckInfo:
+        """The last GitHub release check's result, from cache -- makes no network request of its own."""
+        _require_deployed()
+        return _to_check_info(update_check.load(_update_check_state_path()))
+
+    @app.post("/api/update/check", response_model=UpdateCheckInfo)
+    async def check_for_update() -> UpdateCheckInfo:
+        """Checks GitHub for a new release now, unless the last check was too recent to bother.
+
+        Throttled independently of `update_check_interval_hours` -- see
+        `update.check.MIN_MANUAL_CHECK_SECONDS` -- so this button cannot be
+        mashed into burning through GitHub's unauthenticated rate limit.
+        """
+        _require_deployed()
+        cached = update_check.load(_update_check_state_path())
+        if not update_check.is_check_due(cached, update_check.MIN_MANUAL_CHECK_SECONDS):
+            return _to_check_info(cached)
+        state = await update_check.check_now(update_root, runtime.settings.github_repo, broker=runtime.broker)
+        return _to_check_info(state)
+
+    async def _install_from_github(release: "update_source.AvailableRelease") -> None:
+        """Downloads and installs one GitHub release, detached from the request that kicked it off.
+
+        The broad `except Exception` is deliberate and different from the
+        push route above: that one runs inside the request/response cycle,
+        so FastAPI's own error handling is the backstop if something
+        unexpected happens. Nothing is left to propagate to once this is
+        running as a background task -- without this, an unanticipated
+        failure would surface only as an unretrieved task exception in the
+        server log, with no `update` event telling Settings what happened.
+        """
+        async with update_lock:
+            incoming_dir = update_root / "incoming"
+            incoming_dir.mkdir(parents=True, exist_ok=True)
+            tar_path = incoming_dir / f"{release.build_id}.tar.gz"
+            try:
+                runtime.broker.publish(
+                    HubEvent(type="update", ok=True, detail=f"Downloading {release.tag} ({release.build_id})")
+                )
+                await update_source.download(
+                    release.tar_url,
+                    tar_path,
+                    expected_sha256=release.manifest.content_sha256,
+                    max_bytes=update_installer.MAX_UPLOAD_BYTES,
+                )
+                await update_installer.install(update_root, tar_path, release.manifest, broker=runtime.broker)
+            except (update_source.ReleaseFeedError, update_installer.InstallError) as err:
+                logger.warning("GitHub install of %s failed: %s", release.build_id, err)
+                runtime.broker.publish(HubEvent(type="update", ok=False, detail=str(err)))
+                return
+            except Exception:
+                logger.exception("Unexpected error installing %s from GitHub", release.build_id)
+                runtime.broker.publish(
+                    HubEvent(type="update", ok=False, detail="Install failed unexpectedly -- see server logs")
+                )
+                return
+            finally:
+                tar_path.unlink(missing_ok=True)
+
+        _request_restart()
+
+    @app.post("/api/update/install", response_model=GithubInstallResult, status_code=202)
+    async def install_from_github(force: bool = False) -> GithubInstallResult:
+        """Installs the release `/api/update/available` most recently reported. Needs no signature.
+
+        Returns as soon as the install starts rather than once it finishes --
+        `pip install` on a Pi can take minutes, too long to hold a phone's
+        HTTP connection open for. Progress is the same `update` events a
+        signed push emits, polled through `/api/update/status`.
+        """
+        _require_deployed()
+        if not runtime.settings.github_updates_enabled:
+            raise HTTPException(403, "GitHub updates are disabled in Settings")
+        if update_lock.locked():
+            raise HTTPException(409, "an update is already in progress")
+
+        cached = update_check.load(_update_check_state_path())
+        if cached.available is None:
+            raise HTTPException(404, "no update is available -- check for one first")
+        release = cached.available
+
+        if not force and runtime.service is not None and runtime.service.engine.active_scene:
+            raise HTTPException(409, "a scene is active -- retry with ?force=true, or wait until it's idle")
+
+        asyncio.create_task(_install_from_github(release))
+        return GithubInstallResult(build_id=release.build_id, started=True)
 
     # ------------------------------------------------------------------
     # Finding the remote's address

@@ -253,3 +253,9 @@ const Pref<Map<String, dynamic>> kActivityFilter =
 /// it exactly when it was genuinely still open -- never stale from a
 /// session that exited normally.
 const Pref<bool> kRemoteMaximized = Pref<bool>('live.maximized', false);
+
+/// The build id of the update banner a person has already dismissed for
+/// this browser, so [HomeShell]'s banner stops nagging about that one
+/// release -- a *newer* release found later still shows, since this only
+/// ever suppresses the one id it was set to.
+const Pref<String> kDismissedUpdateBuildId = Pref<String>('update.dismissed_build_id', '');

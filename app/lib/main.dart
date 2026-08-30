@@ -208,7 +208,15 @@ class _HomeShellState extends State<HomeShell> {
       ),
       body: Column(
         children: [
-          if (_isStale(store.version)) const _StalePageBanner(),
+          // Stale wins over "an update is available": after an install the
+          // page is stale *and* that release is already current, so showing
+          // both would contradict itself. Hidden while installing, too --
+          // the Software card already shows progress, and a banner still
+          // offering to review a release that is mid-install is confusing.
+          if (_isStale(store.version))
+            const _StalePageBanner()
+          else if (store.hasUndismissedUpdate && !store.installingUpdate)
+            _UpdateAvailableBanner(store: store, onOpenSettings: () => select('settings')),
           if (store.error != null) _ErrorBanner(message: store.error!, onDismiss: store.clearError),
           // The page outlives the hub, so it has to say when it has. Without
           // this a stopped hub looks exactly like one where nothing is
@@ -319,6 +327,46 @@ class _StalePageBanner extends StatelessWidget {
               ),
             ),
             TextButton(onPressed: reloadPage, child: const Text('Reload')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Says the hub found a new release on GitHub on its own, and points at
+/// Software in Settings to review and install it.
+///
+/// Deliberately does not install from here -- one place to actually trigger
+/// an install (the Software card) is easier to reason about than two, and
+/// this banner can be dismissed per-release without losing that.
+class _UpdateAvailableBanner extends StatelessWidget {
+  const _UpdateAvailableBanner({required this.store, required this.onOpenSettings});
+
+  final HubStore store;
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final release = store.availableUpdate?.available;
+    if (release == null) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.tertiaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+        child: Row(
+          children: [
+            Icon(Icons.system_update, size: 20, color: scheme.onTertiaryContainer),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Harmony Hub ${release.tag} is available.',
+                style: TextStyle(color: scheme.onTertiaryContainer),
+              ),
+            ),
+            TextButton(onPressed: onOpenSettings, child: const Text('Review')),
+            TextButton(onPressed: store.dismissUpdateBanner, child: const Text('Dismiss')),
           ],
         ),
       ),

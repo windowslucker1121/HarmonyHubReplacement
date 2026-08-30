@@ -63,6 +63,36 @@ def test_a_port_outside_the_valid_range_is_rejected():
 
 
 # ----------------------------------------------------------------------
+# GitHub release checking
+# ----------------------------------------------------------------------
+
+
+def test_github_updates_default_on_with_a_sensible_repo():
+    settings = HubSettings()
+    assert settings.github_updates_enabled is True
+    assert settings.github_repo == "windowslucker1121/HarmonyHubReplacement"
+    assert settings.update_check_interval_hours == 6.0
+
+
+def test_github_repo_is_normalised_and_validated():
+    assert HubSettings(github_repo=" owner/name ").github_repo == "owner/name"
+    for bad in ["", "no-slash", "/name", "owner/", "owner/name/extra"]:
+        with pytest.raises(ValidationError):
+            HubSettings(github_repo=bad)
+
+
+def test_update_check_interval_zero_is_allowed_and_means_manual_only():
+    assert HubSettings(update_check_interval_hours=0).update_check_interval_hours == 0
+
+
+def test_update_check_interval_rejects_negative_or_absurdly_large_values():
+    with pytest.raises(ValidationError):
+        HubSettings(update_check_interval_hours=-1)
+    with pytest.raises(ValidationError):
+        HubSettings(update_check_interval_hours=1000)
+
+
+# ----------------------------------------------------------------------
 # Infrared pins -- one receiver and one transmitter, wired once
 # ----------------------------------------------------------------------
 
@@ -192,6 +222,8 @@ def test_only_bind_settings_need_a_process_restart():
     # Everything else applies by restarting the hub, which the page survives.
     assert not live.model_copy(update={"source": "radio"}).needs_process_restart(live)
     assert not live.model_copy(update={"address": "17129BFCB6"}).needs_process_restart(live)
+    assert not live.model_copy(update={"github_updates_enabled": False}).needs_process_restart(live)
+    assert not live.model_copy(update={"update_check_interval_hours": 1.0}).needs_process_restart(live)
 
 
 # ----------------------------------------------------------------------

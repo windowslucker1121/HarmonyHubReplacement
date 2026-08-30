@@ -352,7 +352,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _Entry(
           icon: Icons.system_update,
           title: 'Software',
-          subtitle: store.version!.buildId ?? 'No release installed yet',
+          subtitle: store.hasUndismissedUpdate || store.availableUpdate?.available != null
+              ? '${store.version!.buildId ?? "No release installed yet"} -- update available'
+              : store.version!.buildId ?? 'No release installed yet',
           editsDraft: false,
           content: (context) => _softwareCard(store),
         ),
@@ -375,7 +377,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         builder: (context) => Scaffold(
           appBar: AppBar(title: Text(entry.title)),
           body: ListenableBuilder(
-            listenable: _tick,
+            // Merged with `store`, not just `_tick`: most of this page is
+            // this screen's own local state (a draft edit, `_busy`), but
+            // the Software section also reads live store state -- whether
+            // a GitHub install is in progress, and its latest progress
+            // detail -- that changes from `update`/`hub` events arriving
+            // over the websocket, not from anything this screen did itself.
+            listenable: Listenable.merge([_tick, store]),
             builder: (context, _) => ListView(
               padding: const EdgeInsets.all(16),
               children: [entry.content(context)],
@@ -869,13 +877,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'before trusting a push to have come from you.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
+        if (version.updatesFromGithub) ...[
+          const Divider(height: 24),
+          _githubReleaseSection(store, version),
+        ],
         const SizedBox(height: 12),
         Wrap(
           spacing: 12,
           runSpacing: 8,
           children: [
             OutlinedButton.icon(
-              onPressed: version.previous == null || _busy ? null : () => _confirmRollback(store, version),
+              onPressed: (version.previous == null || _busy || store.installingUpdate)
+                  ? null
+                  : () => _confirmRollback(store, version),
               icon: const Icon(Icons.settings_backup_restore),
               label: Text(version.previous == null ? 'No previous release' : 'Roll back to ${version.previous}'),
             ),
@@ -935,6 +949,134 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await store.rollbackUpdate();
       });
     }
+  }
+
+  /// The GitHub side of the Software card: what was last found, and the way
+  /// to install it. Three states -- installing, a release waiting, or
+  /// nothing new -- each replacing the others rather than stacking up.
+  Widget _githubReleaseSection(HubStore store, VersionInfo version) {
+    final check = store.availableUpdate;
+    final release = check?.available;
+    final scheme = Theme.of(context).colorScheme;
+
+    if (store.installingUpdate) {
+      return _Note(
+        icon: Icons.downloading,
+        text: 'Installing ${release?.tag ?? 'the new release'} -- '
+            '${store.updateProgressDetail ?? 'starting.'} The hub will restart once this finishes.',
+      );
+    }
+
+    if (release != null) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: scheme.tertiaryContainer.withValues(alpha: 0.35),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${release.tag} is available', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            Text(
+              [release.buildId, if (release.gitSha.isNotEmpty) release.gitSha].join(' -- '),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (release.notes.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(release.notes, maxLines: 4, overflow: TextOverflow.ellipsis),
+            ],
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _busy ? null : () => _installUpdate(store),
+                  icon: const Icon(Icons.system_update),
+                  label: const Text('Update software'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : () => _run(() => store.checkForUpdate()),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Check again'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            check?.lastError != null
+                ? 'Last check failed: ${check!.lastError}'
+                : check?.lastCheckedAt != null
+                    ? 'Up to date -- last checked ${_formatTimestamp(check!.lastCheckedAt!)}'
+                    : 'Not checked yet.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        TextButton.icon(
+          onPressed: _busy ? null : () => _run(() => store.checkForUpdate()),
+          icon: const Icon(Icons.refresh),
+          label: const Text('Check for updates'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _installUpdate(HubStore store) async {
+    final release = store.availableUpdate?.available;
+    if (release == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Update software?'),
+        content: Text(
+          'This downloads and installs ${release.tag} (${release.buildId}), then restarts the hub onto '
+          'it. The hub is briefly unreachable while it restarts, and the whole install can take several '
+          'minutes on a Pi.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Update')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await _run(() async {
+      var started = await store.installUpdate();
+
+      if (!started && mounted && (store.error ?? '').contains('scene is active')) {
+        final forceConfirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('A scene is active'),
+            content: const Text('Installing now stops the active scene early. Install anyway?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Install anyway')),
+            ],
+          ),
+        );
+        if (forceConfirmed == true) {
+          started = await store.installUpdate(force: true);
+        }
+      }
+
+      if (!started && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(store.error ?? 'Could not start the install')),
+        );
+      }
+    });
   }
 
   /// Preferences kept in this browser's own storage -- last tab, searches,

@@ -9,6 +9,9 @@ and the active-scene guard.
 from __future__ import annotations
 
 import json
+import shutil
+import time
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,8 +19,10 @@ from fastapi.testclient import TestClient
 from harmony_hub.api import create_app
 from harmony_hub.service import HubSettings
 from harmony_hub.update import auth as update_auth
+from harmony_hub.update import check as update_check
 from harmony_hub.update import state as state_module
 from harmony_hub.update.bundle import build_bundle
+from harmony_hub.update.source import AvailableRelease
 
 CONFIG_WITH_SCENE = {
     "version": 1,
@@ -71,17 +76,37 @@ def update_root(tmp_path):
     return root
 
 
-def _make_client(tmp_path, update_root=None, config=None, updates_enabled=True):
+def _make_client(tmp_path, update_root=None, config=None, updates_enabled=True, github_updates_enabled=True):
     config_path = tmp_path / "hub_config.json"
     buttons_path = tmp_path / "buttons.json"
     config_path.write_text(json.dumps(config or {"version": 1, "devices": [], "scenes": []}), encoding="utf-8")
     buttons_path.write_text("{}", encoding="utf-8")
 
     settings = HubSettings(
-        config_path=config_path, buttons_path=buttons_path, source="none", updates_enabled=updates_enabled
+        config_path=config_path,
+        buttons_path=buttons_path,
+        source="none",
+        updates_enabled=updates_enabled,
+        github_updates_enabled=github_updates_enabled,
     )
     app = create_app(settings, settings_path=tmp_path / "hub_settings.json", update_root=update_root)
     return TestClient(app)
+
+
+def _seed_available_release(update_root, manifest, *, tar_url="https://gh.example/bundle.tar.gz", last_checked_at=None):
+    release = AvailableRelease(
+        tag=f"v-{manifest.build_id}",
+        published_at="2026-08-30T12:00:00Z",
+        notes="Release notes",
+        tar_url=tar_url,
+        tar_bytes=manifest.byte_count,
+        manifest=manifest,
+    )
+    state = update_check.CheckState(
+        last_checked_at=last_checked_at or datetime.now(timezone.utc).isoformat(), available=release
+    )
+    update_check.save(state, update_check.state_path(update_root))
+    return release
 
 
 def test_version_reports_not_deployed_when_there_is_no_release_system(tmp_path):
@@ -98,6 +123,9 @@ def test_update_routes_404_when_there_is_no_release_system(tmp_path):
         assert client.post("/api/update/rollback").status_code == 404
         assert client.get("/api/update/status").status_code == 404
         assert client.get("/api/update/history").status_code == 404
+        assert client.get("/api/update/available").status_code == 404
+        assert client.post("/api/update/check").status_code == 404
+        assert client.post("/api/update/install").status_code == 404
 
 
 def test_version_reports_deployed_with_nothing_installed_yet(tmp_path, update_root):
@@ -234,3 +262,126 @@ def test_update_status_surfaces_recent_progress_events(tmp_path, update_root):
         status = client.get("/api/update/status").json()
         assert status["busy"] is False
         assert any("build-1" in event["detail"] for event in status["recent"])
+
+
+# ----------------------------------------------------------------------
+# Updating from a GitHub release -- no signature; installer.install and
+# update_source.download themselves are covered without a TestClient in
+# tests/test_update_source.py and tests/test_update_installer.py. This
+# file's job is the same as for the push routes: the deployed/not-deployed
+# switch, the disabled-in-settings switch, the active-scene guard, and that
+# a successful install ends up reflected in /api/version.
+# ----------------------------------------------------------------------
+
+
+def test_version_reports_whether_github_updates_are_on(tmp_path, update_root):
+    with _make_client(tmp_path, update_root=update_root, github_updates_enabled=False) as client:
+        assert client.get("/api/version").json()["updates_from_github"] is False
+    with _make_client(tmp_path, update_root=update_root, github_updates_enabled=True) as client:
+        assert client.get("/api/version").json()["updates_from_github"] is True
+
+
+def test_available_update_reports_nothing_by_default(tmp_path, update_root):
+    with _make_client(tmp_path, update_root=update_root) as client:
+        body = client.get("/api/update/available").json()
+        assert body["available"] is None
+        assert body["last_checked_at"] is None
+
+
+def test_available_update_reports_a_cached_release(tmp_path, update_root):
+    manifest, _ = _make_bundle(tmp_path, "build-x")
+    _seed_available_release(update_root, manifest)
+    with _make_client(tmp_path, update_root=update_root) as client:
+        body = client.get("/api/update/available").json()
+        assert body["available"]["build_id"] == "build-x"
+        assert body["available"]["tag"] == "v-build-x"
+
+
+def test_check_for_update_is_throttled_and_does_not_hit_github_again(tmp_path, update_root, monkeypatch):
+    manifest, _ = _make_bundle(tmp_path, "build-x")
+    _seed_available_release(update_root, manifest, last_checked_at=datetime.now(timezone.utc).isoformat())
+
+    called = []
+
+    async def fake_fetch_latest(repo, *, client=None, timeout=15.0):
+        called.append(repo)
+        raise AssertionError("must not reach GitHub while the manual-check throttle is still in effect")
+
+    monkeypatch.setattr("harmony_hub.api.update_source.fetch_latest", fake_fetch_latest)
+
+    with _make_client(tmp_path, update_root=update_root) as client:
+        body = client.post("/api/update/check").json()
+
+    assert body["available"]["build_id"] == "build-x"
+    assert called == []
+
+
+def test_check_for_update_runs_a_fresh_check_when_due(tmp_path, update_root, monkeypatch):
+    stale_manifest, _ = _make_bundle(tmp_path, "build-old")
+    stale_release = AvailableRelease(
+        tag="v-old", tar_url="https://gh.example/old.tar.gz", tar_bytes=1, manifest=stale_manifest
+    )
+    state = update_check.CheckState(last_checked_at="2000-01-01T00:00:00+00:00", available=stale_release)
+    update_check.save(state, update_check.state_path(update_root))
+
+    new_manifest, _ = _make_bundle(tmp_path, "build-new")
+    new_release = AvailableRelease(
+        tag="v-new", tar_url="https://gh.example/new.tar.gz", tar_bytes=1, manifest=new_manifest
+    )
+
+    async def fake_fetch_latest(repo, *, client=None, timeout=15.0):
+        return new_release
+
+    monkeypatch.setattr("harmony_hub.api.update_source.fetch_latest", fake_fetch_latest)
+
+    with _make_client(tmp_path, update_root=update_root) as client:
+        body = client.post("/api/update/check").json()
+
+    assert body["available"]["build_id"] == "build-new"
+
+
+def test_install_from_github_is_404_when_nothing_is_available(tmp_path, update_root):
+    with _make_client(tmp_path, update_root=update_root) as client:
+        assert client.post("/api/update/install").status_code == 404
+
+
+def test_install_from_github_is_refused_when_disabled_in_settings(tmp_path, update_root):
+    manifest, _ = _make_bundle(tmp_path, "build-x")
+    _seed_available_release(update_root, manifest)
+    with _make_client(tmp_path, update_root=update_root, github_updates_enabled=False) as client:
+        assert client.post("/api/update/install").status_code == 403
+
+
+def test_install_from_github_needs_force_while_a_scene_is_active(tmp_path, update_root):
+    manifest, _ = _make_bundle(tmp_path, "build-x")
+    _seed_available_release(update_root, manifest)
+    with _make_client(tmp_path, update_root=update_root, config=CONFIG_WITH_SCENE) as client:
+        assert client.post("/api/scenes/watch_tv/activate").status_code == 200
+        assert client.post("/api/update/install").status_code == 409
+
+
+def test_install_from_github_happy_path_ends_up_reflected_in_version(tmp_path, update_root, monkeypatch):
+    manifest, tar_path = _make_bundle(tmp_path, "build-x")
+    release = _seed_available_release(update_root, manifest)
+
+    async def fake_download(url, dest, *, expected_sha256, max_bytes, client=None, timeout=None):
+        assert url == release.tar_url
+        assert expected_sha256 == manifest.content_sha256
+        shutil.copyfile(tar_path, dest)
+        return dest.stat().st_size
+
+    monkeypatch.setattr("harmony_hub.api.update_source.download", fake_download)
+
+    with _make_client(tmp_path, update_root=update_root) as client:
+        response = client.post("/api/update/install")
+        assert response.status_code == 202
+        assert response.json() == {"build_id": "build-x", "started": True}
+
+        deadline = time.monotonic() + 5
+        version = client.get("/api/version").json()
+        while version.get("build_id") != "build-x" and time.monotonic() < deadline:
+            time.sleep(0.05)
+            version = client.get("/api/version").json()
+
+        assert version["build_id"] == "build-x"
+        assert client.get("/api/update/status").json()["busy"] is False

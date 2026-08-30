@@ -1,0 +1,11 @@
+name: CI
+
+# Every pull request against main runs the same test suite release.yml
+# gates a release on -- see tests.yml, the single definition both call.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml

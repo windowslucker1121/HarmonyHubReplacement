@@ -33,6 +33,9 @@ class HubSettings {
     this.irPigpioHost = 'localhost',
     this.irPigpioPort = 8888,
     this.verbose = false,
+    this.githubUpdatesEnabled = true,
+    this.githubRepo = 'windowslucker1121/HarmonyHubReplacement',
+    this.updateCheckIntervalHours = 6.0,
   });
 
   /// Bind address and port. Editable and saved, but only read at process
@@ -73,6 +76,20 @@ class HubSettings {
 
   bool verbose;
 
+  /// Whether this hub checks GitHub for a new release on its own -- the
+  /// pull counterpart to `updates_enabled` on `VersionInfo`/the push path,
+  /// and independent of it. Mirrors `harmony_hub.settings.HubSettings`.
+  bool githubUpdatesEnabled;
+
+  /// `owner/name` on GitHub. The release feed is read-only and
+  /// unauthenticated, so this only ever needs to name a public repository.
+  String githubRepo;
+
+  /// How often the hub checks GitHub for a new release on its own. `0`
+  /// disables automatic checking; "Check for updates" in Settings still
+  /// works on demand either way.
+  double updateCheckIntervalHours;
+
   factory HubSettings.fromJson(Map<String, dynamic> json) => HubSettings(
         host: (json['host'] ?? '0.0.0.0') as String,
         port: (json['port'] ?? 8765) as int,
@@ -95,6 +112,9 @@ class HubSettings {
         irPigpioHost: (json['ir_pigpio_host'] ?? 'localhost') as String,
         irPigpioPort: (json['ir_pigpio_port'] ?? 8888) as int,
         verbose: (json['verbose'] ?? false) as bool,
+        githubUpdatesEnabled: (json['github_updates_enabled'] ?? true) as bool,
+        githubRepo: (json['github_repo'] ?? 'windowslucker1121/HarmonyHubReplacement') as String,
+        updateCheckIntervalHours: ((json['update_check_interval_hours'] ?? 6.0) as num).toDouble(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -119,6 +139,9 @@ class HubSettings {
         'ir_pigpio_host': irPigpioHost,
         'ir_pigpio_port': irPigpioPort,
         'verbose': verbose,
+        'github_updates_enabled': githubUpdatesEnabled,
+        'github_repo': githubRepo,
+        'update_check_interval_hours': updateCheckIntervalHours,
       };
 
   HubSettings copy() => HubSettings.fromJson(toJson());
@@ -268,6 +291,7 @@ class VersionInfo {
     this.previous,
     this.trial,
     this.tokenFingerprint,
+    this.updatesFromGithub = false,
   });
 
   final bool deployed;
@@ -281,6 +305,10 @@ class VersionInfo {
   final TrialInfo? trial;
   final String? tokenFingerprint;
 
+  /// Whether this hub also checks GitHub for a release on its own -- the
+  /// pull counterpart to [updatesEnabled], independent of it.
+  final bool updatesFromGithub;
+
   factory VersionInfo.fromJson(Map<String, dynamic> json) => VersionInfo(
         deployed: (json['deployed'] ?? false) as bool,
         updatesEnabled: (json['updates_enabled'] ?? true) as bool,
@@ -292,6 +320,7 @@ class VersionInfo {
         previous: json['previous'] as String?,
         trial: json['trial'] == null ? null : TrialInfo.fromJson(json['trial'] as Map<String, dynamic>),
         tokenFingerprint: json['token_fingerprint'] as String?,
+        updatesFromGithub: (json['updates_from_github'] ?? false) as bool,
       );
 }
 
@@ -320,5 +349,65 @@ class UpdateHistoryEntry {
         buildId: json['build_id'] as String,
         installedAt: json['installed_at'] as String,
         outcome: json['outcome'] as String,
+      );
+}
+
+/// One GitHub release worth installing. Mirrors `harmony_hub.api.AvailableUpdateInfo`.
+class AvailableUpdateInfo {
+  AvailableUpdateInfo({
+    required this.tag,
+    required this.buildId,
+    this.publishedAt = '',
+    this.notes = '',
+    this.gitSha = '',
+    this.tarBytes = 0,
+  });
+
+  final String tag;
+  final String buildId;
+  final String publishedAt;
+  final String notes;
+  final String gitSha;
+  final int tarBytes;
+
+  factory AvailableUpdateInfo.fromJson(Map<String, dynamic> json) => AvailableUpdateInfo(
+        tag: json['tag'] as String,
+        buildId: json['build_id'] as String,
+        publishedAt: (json['published_at'] ?? '') as String,
+        notes: (json['notes'] ?? '') as String,
+        gitSha: (json['git_sha'] ?? '') as String,
+        tarBytes: (json['tar_bytes'] ?? 0) as int,
+      );
+}
+
+/// What the last GitHub release check found -- served from cache, so cheap to poll after reconnecting.
+/// Mirrors `harmony_hub.api.UpdateCheckInfo`.
+class UpdateCheckInfo {
+  UpdateCheckInfo({this.lastCheckedAt, this.lastError, this.available});
+
+  final String? lastCheckedAt;
+  final String? lastError;
+  final AvailableUpdateInfo? available;
+
+  factory UpdateCheckInfo.fromJson(Map<String, dynamic> json) => UpdateCheckInfo(
+        lastCheckedAt: json['last_checked_at'] as String?,
+        lastError: json['last_error'] as String?,
+        available: json['available'] == null
+            ? null
+            : AvailableUpdateInfo.fromJson(json['available'] as Map<String, dynamic>),
+      );
+}
+
+/// The result of asking the hub to install the release it last reported available.
+/// Mirrors `harmony_hub.api.GithubInstallResult`.
+class GithubInstallResult {
+  GithubInstallResult({required this.buildId, required this.started});
+
+  final String buildId;
+  final bool started;
+
+  factory GithubInstallResult.fromJson(Map<String, dynamic> json) => GithubInstallResult(
+        buildId: json['build_id'] as String,
+        started: (json['started'] ?? false) as bool,
       );
 }

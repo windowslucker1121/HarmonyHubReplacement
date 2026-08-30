@@ -820,6 +820,195 @@ async def test_changing_the_config_default_affects_every_binding_that_did_not_ov
     assert commands(engine, "tv") == ["volume_up"]
 
 
+# --------------------------------------------------------------------------
+# Repeat acceleration
+# --------------------------------------------------------------------------
+
+
+async def test_repeat_accel_off_by_default_behaves_like_a_flat_repeat(buttons):
+    """`repeat_accel` at its default of 1.0 must not change anything -- a
+    binding that never mentions it should repeat exactly as it always has."""
+    engine = await make_engine(
+        buttons,
+        global_bindings={
+            "volume_up": {
+                "repeat_delay": 0,
+                "on_repeat": [{"type": "device", "device": "tv", "command": "volume_up"}],
+            }
+        },
+    )
+
+    await engine.handle(press(kind="press"))
+    for _ in range(4):
+        await engine.handle(press(kind="repeat"))
+
+    assert commands(engine, "tv") == ["volume_up"] * 4
+
+
+async def test_repeat_accel_fires_the_repeat_actions_more_than_once_per_packet(buttons):
+    """Once the ramp has had time to build up, a single held-button packet
+    should fire the repeat actions several times, not just once -- the
+    remote never reports a hold any faster than its own ~100ms cadence, so
+    going faster than that has to mean more repeats per packet instead of
+    more packets."""
+    engine = await make_engine(
+        buttons,
+        global_bindings={
+            "volume_up": {
+                "repeat_delay": 0,
+                "repeat_interval": 0,
+                "repeat_accel": 4,
+                "repeat_accel_seconds": 0.05,
+                "on_repeat": [{"type": "device", "device": "tv", "command": "volume_up"}],
+            }
+        },
+    )
+
+    await engine.handle(press(kind="press"))
+    await engine.handle(press(kind="repeat"))  # first packet past the delay: exactly one
+    assert commands(engine, "tv") == ["volume_up"]
+
+    await asyncio.sleep(0.08)  # past repeat_accel_seconds: the ramp is now maxed out
+    await engine.handle(press(kind="repeat"))
+
+    assert commands(engine, "tv") == ["volume_up"] * (1 + 4)
+
+
+async def test_repeat_accel_never_exceeds_the_hard_burst_ceiling(buttons):
+    """However high `repeat_accel` is configured, one packet must not be
+    able to flood a backend with an unbounded number of commands."""
+    engine = await make_engine(
+        buttons,
+        global_bindings={
+            "volume_up": {
+                "repeat_delay": 0,
+                "repeat_interval": 0,
+                "repeat_accel": 16,  # the maximum allowed value
+                "repeat_accel_seconds": 0.05,
+                "on_repeat": [{"type": "device", "device": "tv", "command": "volume_up"}],
+            }
+        },
+    )
+
+    await engine.handle(press(kind="press"))
+    await engine.handle(press(kind="repeat"))
+    await asyncio.sleep(0.08)
+    await engine.handle(press(kind="repeat"))
+
+    # 16x would be 16 repeats for this one packet; the engine caps it well
+    # below that regardless of how the ramp is configured.
+    assert len(commands(engine, "tv")) <= 1 + 8
+
+
+async def test_releasing_resets_the_acceleration_ramp(buttons):
+    """A fresh press must start slow again, not pick up where a previous
+    hold's ramp left off."""
+    engine = await make_engine(
+        buttons,
+        global_bindings={
+            "volume_up": {
+                "repeat_delay": 0,
+                "repeat_interval": 0,
+                "repeat_accel": 8,
+                "repeat_accel_seconds": 0.05,
+                "on_repeat": [{"type": "device", "device": "tv", "command": "volume_up"}],
+            }
+        },
+    )
+
+    await engine.handle(press(kind="press"))
+    await engine.handle(press(kind="repeat"))
+    await asyncio.sleep(0.08)
+    await engine.handle(press(kind="repeat"))  # ramp maxed out: a burst of up to 8
+    burst = len(commands(engine, "tv"))
+    assert burst > 2
+
+    await engine.handle(press(kind="release"))
+    await engine.handle(press(kind="press"))
+    await engine.handle(press(kind="repeat"))  # first packet of the new press: exactly one
+    await engine.handle(press(kind="repeat"))  # immediately after: ramp restarted, so still slow
+
+    assert commands(engine, "tv")[burst:] == ["volume_up", "volume_up"]
+
+
+async def test_a_bindings_own_repeat_accel_overrides_the_config_default(buttons):
+    engine = await make_engine(
+        buttons,
+        default_repeat_accel=1,  # config-wide: acceleration off
+        default_repeat_accel_seconds=0.05,
+        global_bindings={
+            "volume_up": {
+                "repeat_delay": 0,
+                "repeat_interval": 0,
+                "repeat_accel": 4,  # this button overrides it back on
+                "on_repeat": [{"type": "device", "device": "tv", "command": "volume_up"}],
+            }
+        },
+    )
+
+    await engine.handle(press(kind="press"))
+    await engine.handle(press(kind="repeat"))
+    await asyncio.sleep(0.08)
+    await engine.handle(press(kind="repeat"))
+
+    assert commands(engine, "tv") == ["volume_up"] * (1 + 4)
+
+
+async def test_a_burst_of_repeats_is_announced_once_but_failures_are_not_silenced(buttons):
+    """Logging every repeat in an eight-wide burst would flood the live view
+    for no benefit, so only the first is announced -- but a failure part way
+    through a burst must still be visible every time it happens."""
+    engine = await make_engine(
+        buttons,
+        global_bindings={
+            "volume_up": {
+                "repeat_delay": 0,
+                "repeat_interval": 0,
+                "repeat_accel": 4,
+                "repeat_accel_seconds": 0.05,
+                "on_repeat": [{"type": "device", "device": "tv", "command": "not_a_real_command"}],
+            }
+        },
+    )
+
+    before = len(engine.broker.history)
+    await engine.handle(press(kind="press"))
+    await engine.handle(press(kind="repeat"))
+    await asyncio.sleep(0.08)
+    await engine.handle(press(kind="repeat"))  # a burst of failures
+
+    failures = [e for e in engine.broker.history[before:] if e.type == "action" and e.ok is False]
+    assert len(failures) == 1 + 4  # one per iteration of the burst, not just the first
+
+
+async def test_a_burst_of_successful_repeats_publishes_one_labelled_action_event(buttons):
+    engine = await make_engine(
+        buttons,
+        global_bindings={
+            "volume_up": {
+                "repeat_delay": 0,
+                "repeat_interval": 0,
+                "repeat_accel": 4,
+                "repeat_accel_seconds": 0.05,
+                "on_repeat": [{"type": "device", "device": "tv", "command": "volume_up"}],
+            }
+        },
+    )
+
+    before = len(engine.broker.history)
+    await engine.handle(press(kind="press"))
+    await engine.handle(press(kind="repeat"))
+    await asyncio.sleep(0.08)
+    await engine.handle(press(kind="repeat"))  # a burst of 4 successful repeats
+
+    action_events = [e for e in engine.broker.history[before:] if e.type == "action" and e.ok]
+    # Two packets fired in total (the first single repeat, then the burst),
+    # so two action events -- not one per underlying backend call -- and the
+    # second names how many it actually stood for.
+    assert len(action_events) == 2
+    assert "×4" in action_events[-1].action
+
+
 async def test_release_runs_the_release_actions(buttons):
     engine = await make_engine(
         buttons,

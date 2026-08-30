@@ -38,12 +38,16 @@ ALLOWED_PATTERNS: List[str] = [
     "src/harmony_hub/backends/*.py",
     "src/harmony_hub/update/*.py",
     "src/harmony_receiver/*.py",
-    "src/harmony_hub/web/*",
-    "src/harmony_hub/web/*/*",
-    "src/harmony_hub/web/*/*/*",
-    "src/harmony_hub/web/*/*/*/*",
-    "src/harmony_hub/web/*/*/*/*/*",
 ]
+
+#: The built web app is matched by prefix, not by a glob pattern above --
+#: it can nest arbitrarily deep (a Flutter package's own bundled assets
+#: directory, e.g. `assets/packages/cupertino_icons/assets/...`), and a
+#: fixed number of `web/*/*/...` glob patterns silently drops anything
+#: past whatever depth was hardcoded, which is exactly the kind of bug an
+#: allowlist is supposed to make loud instead of silent. `DENY_NAMES` below
+#: still applies to anything under here.
+WEB_PREFIX = "src/harmony_hub/web/"
 
 #: Never matched even if a future pattern above would otherwise catch them.
 #: Belt and braces over the allowlist: a `hub_config.json` someone commits
@@ -64,6 +68,8 @@ def is_allowed(relative_path: "Path | str") -> bool:
         return False
     if Path(posix).suffix == ".pyc":
         return False
+    if posix.startswith(WEB_PREFIX):
+        return True
     return any(fnmatch.fnmatch(posix, pattern) for pattern in ALLOWED_PATTERNS)
 
 

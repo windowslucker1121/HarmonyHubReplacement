@@ -210,6 +210,36 @@ class FakeApi extends HubApi {
     return UpdateResult(buildId: fakeVersion?.previous, restarting: true);
   }
 
+  /// `null` means no release has been found -- most tests never see the
+  /// GitHub side of the Software card at all, same as a hub that has not
+  /// checked yet.
+  UpdateCheckInfo? fakeAvailableUpdate;
+  bool checkedForUpdate = false;
+  final List<bool> installRequests = [];
+
+  /// Set to make the first (unforced) [installUpdate] behave like the real
+  /// route's 409 when a scene is active -- a later, forced call still
+  /// succeeds, the same way the real one does.
+  bool refuseInstallWithoutForce = false;
+
+  @override
+  Future<UpdateCheckInfo> availableUpdate() async => fakeAvailableUpdate ?? UpdateCheckInfo();
+
+  @override
+  Future<UpdateCheckInfo> checkForUpdate() async {
+    checkedForUpdate = true;
+    return fakeAvailableUpdate ?? UpdateCheckInfo();
+  }
+
+  @override
+  Future<GithubInstallResult> installUpdate({bool force = false}) async {
+    installRequests.add(force);
+    if (refuseInstallWithoutForce && !force) {
+      throw HubApiException(409, "a scene is active -- retry with ?force=true, or wait until it's idle");
+    }
+    return GithubInstallResult(buildId: fakeAvailableUpdate?.available?.buildId ?? '', started: true);
+  }
+
   @override
   Future<List<HubCheck>> checks() async => [
         HubCheck(name: 'Configuration file', ok: true, detail: '2 device(s), 2 scene(s)'),
@@ -1050,6 +1080,39 @@ void main() {
     expect(api.saved.scenes.first.bindings['volume_up']!.repeatDelay, 0.0);
   });
 
+  testWidgets('a custom repeat timing can turn on acceleration for one button', (tester) async {
+    final api = FakeApi();
+    api.saved.scenes.first.bindings['volume_up']!.onRepeat = [
+      HubAction.device('tv', 'volume_up')
+    ];
+
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Custom timing for this button'));
+    await tester.pumpAndSettle();
+
+    // Acceleration starts off, so its second slider has nothing to show.
+    expect(find.text('Time to reach full speed'), findsNothing);
+
+    final accelSlider = find.byType(Slider).at(2);
+    await tester.ensureVisible(accelSlider);
+    await tester.pumpAndSettle();
+    final track = tester.getRect(accelSlider);
+    await tester.tapAt(Offset(track.right - 4, track.center.dy));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Time to reach full speed'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(api.saved.scenes.first.bindings['volume_up']!.repeatAccel, greaterThan(1));
+  });
+
   testWidgets('turning custom timing back off clears the override', (tester) async {
     final api = FakeApi();
     api.saved.scenes.first.bindings['volume_up']!.onRepeat = [
@@ -1077,6 +1140,8 @@ void main() {
     final saved = api.saved.scenes.first.bindings['volume_up']!;
     expect(saved.repeatDelay, isNull);
     expect(saved.repeatInterval, isNull);
+    expect(saved.repeatAccel, isNull);
+    expect(saved.repeatAccelSeconds, isNull);
   });
 
   testWidgets('an action can be set to follow whatever is focused', (tester) async {
@@ -1309,6 +1374,37 @@ void main() {
 
     expect(api.saved.defaultRepeatDelay, 0.0);
     expect(find.textContaining('Right now: repeats immediately.'), findsOneWidget);
+  });
+
+  testWidgets('the default repeat timing dialog can turn on acceleration', (tester) async {
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final api = FakeApi();
+    await pumpApp(tester, api);
+    await tester.tap(find.text('Scenes'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Default repeat timing'));
+    await tester.pumpAndSettle();
+
+    // Off by default: the ramp-time slider has nothing to show yet.
+    expect(find.text('Time to reach full speed'), findsNothing);
+
+    final accelSlider = find.byType(Slider).at(2);
+    final track = tester.getRect(accelSlider);
+    await tester.tapAt(Offset(track.right - 4, track.center.dy));
+    await tester.pumpAndSettle();
+
+    // Turning it on reveals the second slider it governs.
+    expect(find.text('Time to reach full speed'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(api.saved.defaultRepeatAccel, greaterThan(1));
+    expect(find.textContaining('speeding up to'), findsOneWidget);
   });
 
   testWidgets('the devices screen lists configured devices', (tester) async {
@@ -1993,6 +2089,120 @@ void main() {
     final finder = find.widgetWithText(OutlinedButton, 'No previous release');
     await reveal(tester, finder);
     expect(tester.widget<OutlinedButton>(finder).onPressed, isNull);
+  });
+
+  // ------------------------------------------------------------------
+  // Updating from a GitHub release
+  // ------------------------------------------------------------------
+
+  testWidgets('a deployed hub with github updates off offers no way to check', (tester) async {
+    final api = FakeApi()
+      ..fakeVersion = VersionInfo(deployed: true, updatesEnabled: true, buildId: 'build-1', updatesFromGithub: false);
+    await openSettings(tester, api);
+    await openSection(tester, 'Software');
+
+    expect(find.text('Check for updates'), findsNothing);
+  });
+
+  testWidgets('a deployed hub with nothing available offers to check for updates', (tester) async {
+    final api = FakeApi()
+      ..fakeVersion = VersionInfo(deployed: true, updatesEnabled: true, buildId: 'build-1', updatesFromGithub: true);
+    await openSettings(tester, api);
+    await openSection(tester, 'Software');
+
+    final checkButton = find.widgetWithText(TextButton, 'Check for updates');
+    await reveal(tester, checkButton);
+    expect(find.text('Not checked yet.'), findsOneWidget);
+
+    await tester.tap(checkButton);
+    await tester.pumpAndSettle();
+
+    expect(api.checkedForUpdate, isTrue);
+  });
+
+  testWidgets('a release available offers to install it, behind a confirmation', (tester) async {
+    final api = FakeApi()
+      ..fakeVersion = VersionInfo(deployed: true, updatesEnabled: true, buildId: 'build-1', updatesFromGithub: true)
+      ..fakeAvailableUpdate = UpdateCheckInfo(
+        available: AvailableUpdateInfo(tag: 'v1.2.3', buildId: 'build-2', notes: 'Fixes things'),
+      );
+    await openSettings(tester, api);
+    await openSection(tester, 'Software');
+
+    final updateButton = find.widgetWithText(FilledButton, 'Update software');
+    await reveal(tester, updateButton);
+    expect(find.text('v1.2.3 is available'), findsOneWidget);
+    expect(find.textContaining('build-2'), findsOneWidget);
+
+    await tester.tap(updateButton);
+    await tester.pumpAndSettle();
+
+    // A confirmation dialog stands between the button and the actual
+    // install, the same way rollback's does -- this kicks off a
+    // multi-minute download and restart on a Pi, not something a stray tap
+    // should start.
+    expect(api.installRequests, isEmpty);
+    await tester.tap(find.widgetWithText(FilledButton, 'Update'));
+    await tester.pumpAndSettle();
+
+    expect(api.installRequests, [false]);
+
+    // The hub stays fully reachable while it downloads and installs, unlike
+    // a rollback -- so the card has to say so itself, driven by the same
+    // `update` events the Live log renders.
+    api.eventController.add(
+      HubEvent(type: 'update', at: DateTime.now(), ok: true, detail: 'Installing dependencies'),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Installing dependencies'), findsOneWidget);
+    // The release details and its "Update software" button give way to the
+    // progress note entirely while installing -- there is nothing left to
+    // press a second time.
+    expect(find.widgetWithText(FilledButton, 'Update software'), findsNothing);
+  });
+
+  testWidgets('an install refused for an active scene offers to force it', (tester) async {
+    final api = FakeApi()
+      ..fakeVersion = VersionInfo(deployed: true, updatesEnabled: true, buildId: 'build-1', updatesFromGithub: true)
+      ..fakeAvailableUpdate = UpdateCheckInfo(available: AvailableUpdateInfo(tag: 'v1.2.3', buildId: 'build-2'))
+      ..refuseInstallWithoutForce = true;
+    await openSettings(tester, api);
+    await openSection(tester, 'Software');
+
+    final updateButton = find.widgetWithText(FilledButton, 'Update software');
+    await reveal(tester, updateButton);
+    await tester.tap(updateButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Update'));
+    await tester.pumpAndSettle();
+
+    expect(api.installRequests, [false]);
+    expect(find.text('A scene is active'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Install anyway'));
+    await tester.pumpAndSettle();
+
+    expect(api.installRequests, [false, true]);
+  });
+
+  testWidgets('the update banner on the home shell can be dismissed per release', (tester) async {
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final api = FakeApi()
+      ..fakeVersion = VersionInfo(deployed: true, updatesEnabled: true, buildId: 'build-1', updatesFromGithub: true)
+      ..fakeAvailableUpdate = UpdateCheckInfo(available: AvailableUpdateInfo(tag: 'v1.2.3', buildId: 'build-2'));
+    final prefs = UiPrefs.memory();
+    await pumpApp(tester, api, prefs: prefs);
+
+    expect(find.textContaining('v1.2.3 is available'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Dismiss'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('v1.2.3 is available'), findsNothing);
+    expect(prefs.get(kDismissedUpdateBuildId), 'build-2');
   });
 
   testWidgets('a setting can be edited and saved', (tester) async {
