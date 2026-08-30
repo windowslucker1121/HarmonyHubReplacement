@@ -13,6 +13,9 @@ This project listens to your existing Harmony remote and lets you decide what ev
 - **A picture of your actual remote** — set things up by tapping buttons on
   a picture of the remote, not by memorizing button names.
 - **Works from your phone or a browser** 
+- **Talks to the equipment you already own** — Home Assistant, Android TV /
+  Google TV, Denon/Marantz AV receivers, LG webOS TVs, and any old infrared
+  gear, with webhooks and local commands for anything else.
 
 ## App Screenshots
 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
