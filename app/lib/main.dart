@@ -132,7 +132,7 @@ class _HarmonyHubAppState extends State<HarmonyHubApp> {
               ),
             ),
           ),
-          home: const HomeShell(),
+          home: SelectionArea(child: const HomeShell()),
         ),
       ),
     );
