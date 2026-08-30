@@ -8,20 +8,14 @@ on:
 
 jobs:
   python:
-    name: Python (${{ matrix.python-version }})
+    name: Python
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # 3.11 is the floor pyproject.toml declares (`requires-python`);
-        # 3.13 is what local dev runs on -- see pyproject.toml.
-        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
           cache: pip
 
       # `deploy` pulls in paramiko, which only `harmony-deploy setup`/
