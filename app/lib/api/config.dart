@@ -12,14 +12,15 @@ List<HubAction> _actionList(dynamic value) =>
     ((value ?? []) as List).map((e) => HubAction.fromJson(e as Map<String, dynamic>)).toList();
 
 /// One side of a [HubCondition], or the source a `set` action stores --
-/// a device's live state, a previously-`set` variable, or a value fixed
-/// right here in configuration. All three round-trip through the same
-/// shape so a condition's two sides, or a restore parameter, are never a
-/// special case depending on which kind of value they happen to be.
+/// a device's live state, a previously-`set` variable, a value fixed right
+/// here in configuration, or which scene a switch is moving from/to. All
+/// four round-trip through the same shape so a condition's two sides, or a
+/// restore parameter, are never a special case depending on which kind of
+/// value they happen to be.
 class HubValue {
-  HubValue({required this.type, this.device, this.target, this.name, this.value});
+  HubValue({required this.type, this.device, this.target, this.name, this.value, this.edge});
 
-  /// 'state' | 'var' | 'literal'
+  /// 'state' | 'var' | 'literal' | 'transition'
   String type;
 
   /// A 'state' value's device and target -- what `Backend.read_state` takes.
@@ -32,6 +33,12 @@ class HubValue {
   /// A 'literal' value's fixed text.
   String? value;
 
+  /// A 'transition' value's side: 'from' (the scene being left) or 'to'
+  /// (the one being entered). Meaningful only while a scene switch is
+  /// under way -- an `on_start`/`on_stop` macro -- and resolves to `""`
+  /// (never unreadable) everywhere else, including a plain button binding.
+  String? edge;
+
   factory HubValue.state(String device, String target) =>
       HubValue(type: 'state', device: device, target: target);
 
@@ -39,12 +46,15 @@ class HubValue {
 
   factory HubValue.literal(String value) => HubValue(type: 'literal', value: value);
 
+  factory HubValue.transition(String edge) => HubValue(type: 'transition', edge: edge);
+
   factory HubValue.fromJson(Map<String, dynamic> json) => HubValue(
         type: json['type'] as String,
         device: json['device'] as String?,
         target: json['target'] as String?,
         name: json['name'] as String?,
         value: json['value'] as String?,
+        edge: json['edge'] as String?,
       );
 
   /// Only the keys belonging to this value's type -- the server rejects
@@ -52,12 +62,14 @@ class HubValue {
   Map<String, dynamic> toJson() => switch (type) {
         'state' => {'type': 'state', 'device': device, 'target': target},
         'var' => {'type': 'var', 'name': name},
+        'transition' => {'type': 'transition', 'edge': edge ?? 'from'},
         _ => {'type': 'literal', 'value': value ?? ''},
       };
 
   String describe() => switch (type) {
         'state' => '${device ?? '?'}.${target ?? '?'}',
         'var' => '\$${name ?? '?'}',
+        'transition' => edge == 'to' ? 'scene switching to' : 'scene switching from',
         _ => "'${value ?? ''}'",
       };
 

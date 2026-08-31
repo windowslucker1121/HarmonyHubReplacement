@@ -22,6 +22,7 @@ class ValueEditor extends StatefulWidget {
     required this.value,
     required this.onChanged,
     this.label,
+    this.sceneLiteralPicker = false,
   });
 
   final HubConfig config;
@@ -30,14 +31,23 @@ class ValueEditor extends StatefulWidget {
   final ValueChanged<HubValue> onChanged;
   final String? label;
 
+  /// When true, a 'literal' value is picked from the configured scenes
+  /// (plus "no scene -- idle" for `""`) rather than typed as free text.
+  /// [ConditionEditor] sets this on whichever side is *not* the
+  /// [HubValue.transition] one, since a literal being compared against a
+  /// scene switch means a scene id, not arbitrary text -- the same "never
+  /// type an id" principle the device/command dropdowns already follow.
+  final bool sceneLiteralPicker;
+
   @override
   State<ValueEditor> createState() => _ValueEditorState();
 }
 
 class _ValueEditorState extends State<ValueEditor> {
-  late String _kind; // 'literal' | 'state' | 'var'
+  late String _kind; // 'literal' | 'state' | 'var' | 'transition'
   late final TextEditingController _literalController;
   late final TextEditingController _varController;
+  late String _edge; // 'from' | 'to', for the 'transition' kind
 
   List<BackendInfo> _backends = [];
   bool _loadingBackends = false;
@@ -61,6 +71,7 @@ class _ValueEditorState extends State<ValueEditor> {
     _varController = TextEditingController(text: widget.value.name ?? '');
     _deviceId = widget.value.device;
     _target = widget.value.target;
+    _edge = widget.value.edge ?? 'from';
     _loadBackends();
     if (_kind == 'state' && _deviceId != null) _loadTargets(_deviceId!);
     if (_kind == 'var') _loadVariables();
@@ -159,6 +170,8 @@ class _ValueEditorState extends State<ValueEditor> {
         widget.onChanged(HubValue.state(_deviceId ?? '', _target ?? ''));
       case 'var':
         widget.onChanged(HubValue.variable(_varController.text.trim()));
+      case 'transition':
+        widget.onChanged(HubValue.transition(_edge));
       default:
         widget.onChanged(HubValue.literal(_literalController.text));
     }
@@ -179,6 +192,7 @@ class _ValueEditorState extends State<ValueEditor> {
             ButtonSegment(value: 'literal', label: Text('Fixed'), icon: Icon(Icons.edit_outlined)),
             ButtonSegment(value: 'state', label: Text('Device'), icon: Icon(Icons.sensors_outlined)),
             ButtonSegment(value: 'var', label: Text('Variable'), icon: Icon(Icons.bookmark_outline)),
+            ButtonSegment(value: 'transition', label: Text('Scene change'), icon: Icon(Icons.swap_horiz)),
           ],
           selected: {_kind},
           onSelectionChanged: (values) {
@@ -192,14 +206,61 @@ class _ValueEditorState extends State<ValueEditor> {
         if (_kind == 'literal') _literalField(),
         if (_kind == 'state') ..._stateFields(scheme),
         if (_kind == 'var') ..._varFields(),
+        if (_kind == 'transition') _transitionField(),
       ],
     );
   }
 
-  Widget _literalField() => TextField(
+  Widget _literalField() {
+    if (!widget.sceneLiteralPicker) {
+      return TextField(
         controller: _literalController,
         decoration: const InputDecoration(labelText: 'Value', border: OutlineInputBorder()),
         onChanged: (_) => _emit(),
+      );
+    }
+    // A literal compared against a scene switch means a scene id, never
+    // arbitrary text -- picked the same way a command or a device is,
+    // rather than typed and risking a typo that silently never matches.
+    final scenes = widget.config.scenes;
+    final validValues = {'', ...scenes.map((s) => s.id)};
+    final current = _literalController.text;
+    return DropdownButtonFormField<String>(
+      isExpanded: true,
+      initialValue: validValues.contains(current) ? current : null,
+      decoration: const InputDecoration(labelText: 'Scene', border: OutlineInputBorder()),
+      items: [
+        const DropdownMenuItem(value: '', child: Text('(no scene -- idle)')),
+        for (final scene in scenes) DropdownMenuItem(value: scene.id, child: Text(scene.name)),
+      ],
+      onChanged: (value) => setState(() {
+        _literalController.text = value ?? '';
+        _emit();
+      }),
+    );
+  }
+
+  Widget _transitionField() => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'from', label: Text('The scene being left'), icon: Icon(Icons.logout)),
+              ButtonSegment(value: 'to', label: Text('The scene being entered'), icon: Icon(Icons.login)),
+            ],
+            selected: {_edge},
+            onSelectionChanged: (values) {
+              setState(() => _edge = values.first);
+              _emit();
+            },
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Only meaningful inside "When the scene starts" / "When the scene stops" -- '
+            'resolves to no scene everywhere else, including a plain button.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       );
 
   List<Widget> _stateFields(ColorScheme scheme) {
@@ -336,10 +397,22 @@ class _ConditionEditorState extends State<ConditionEditor> {
     ('unknown', 'cannot be read'),
   ];
 
+  /// `known`/`unknown` ask whether `left` could be read at all -- a
+  /// question a `transition` value always answers the same way (see
+  /// `HubValue.transition`'s docstring), so offering them there is a
+  /// control that can never do anything.
+  static const _opsWithoutTransitionLeft = {'known', 'unknown'};
+
   @override
   Widget build(BuildContext context) {
     final condition = widget.condition;
     final needsRight = condition.needsRight;
+    final leftIsTransition = condition.left.type == 'transition';
+    final rightIsTransition = condition.right?.type == 'transition';
+    final ops = leftIsTransition
+        ? _ops.where((op) => !_opsWithoutTransitionLeft.contains(op.$1)).toList()
+        : _ops;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -349,17 +422,27 @@ class _ConditionEditorState extends State<ConditionEditor> {
           api: widget.api,
           value: condition.left,
           label: 'Check',
+          sceneLiteralPicker: rightIsTransition,
           onChanged: (value) => setState(() {
             condition.left = value;
+            // `known`/`unknown` stop making sense the moment the left side
+            // becomes a transition -- reset rather than leave the saved
+            // condition on an operator the dropdown below no longer even
+            // offers, which the display-only fallback there cannot fix on
+            // its own.
+            if (value.type == 'transition' && _opsWithoutTransitionLeft.contains(condition.op)) {
+              condition.op = 'is';
+              condition.right ??= HubValue.literal('');
+            }
             widget.onChanged(condition);
           }),
         ),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(
           isExpanded: true,
-          initialValue: condition.op,
+          initialValue: ops.any((op) => op.$1 == condition.op) ? condition.op : ops.first.$1,
           decoration: const InputDecoration(labelText: 'Compared how', border: OutlineInputBorder()),
-          items: [for (final (value, label) in _ops) DropdownMenuItem(value: value, child: Text(label))],
+          items: [for (final (value, label) in ops) DropdownMenuItem(value: value, child: Text(label))],
           onChanged: (value) {
             if (value == null) return;
             setState(() {
@@ -377,6 +460,7 @@ class _ConditionEditorState extends State<ConditionEditor> {
             api: widget.api,
             value: condition.right ?? HubValue.literal(''),
             label: 'Against',
+            sceneLiteralPicker: leftIsTransition,
             onChanged: (value) => setState(() {
               condition.right = value;
               widget.onChanged(condition);

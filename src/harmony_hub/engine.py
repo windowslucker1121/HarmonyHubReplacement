@@ -40,6 +40,7 @@ from .models import (
     SceneAction,
     SetAction,
     StateValue,
+    TransitionValue,
     Value,
     VarValue,
     WaitForAction,
@@ -106,6 +107,24 @@ class Focus:
     label: str
 
 
+@dataclass(frozen=True)
+class Transition:
+    """Which scene a switch currently under way is moving between.
+
+    What `TransitionValue` resolves against. Set once for the whole switch
+    -- around both the outgoing scene's stop macro and the incoming one's
+    start macro -- so a condition in either sees the same answer. `""`
+    (never `None`) is either end's "idle": no scene was running before this
+    one started, or none is being entered (an explicit stop, or the off
+    button). `None` on `SceneEngine._transition` itself, not on these
+    fields, is what means "no switch is happening at all" -- see
+    `SceneEngine.read_value`.
+    """
+
+    from_scene: str
+    to_scene: str
+
+
 class SceneEngine:
     """Routes remote events to actions, according to the active scene.
 
@@ -136,6 +155,16 @@ class SceneEngine:
         #: What the SmartHome +/- keys currently follow. `None` before
         #: anything has been touched, or after `stop()`.
         self._focus: Optional[Focus] = None
+
+        #: The scene switch currently under way, for `TransitionValue` to
+        #: resolve against. `None` outside of one -- an ordinary button
+        #: binding, say -- which is what makes it distinct from `Transition`
+        #: itself never having an unreadable field; see `read_value`.
+        #: `activate_scene`/`stop_scene` save and restore this around their
+        #: own macros, since a stop macro can trigger a nested scene switch
+        #: (an "everything off" scene stopping another) and the outer
+        #: transition must still be in effect once the inner one finishes.
+        self._transition: Optional[Transition] = None
 
         #: What every `SetAction` has stored, by name -- what a `var` value
         #: recalls. Hub-lifetime and not persisted, the same as `_focus`:
@@ -189,6 +218,7 @@ class SceneEngine:
         self._credits.clear()
         self._ramp_elapsed.clear()
         self._focus = None
+        self._transition = None
         self.variables.clear()
         self._state_cache.clear()
         await self._close_backends()
@@ -260,6 +290,14 @@ class SceneEngine:
         receiver -- "watch shieldTV" and "watch TV", say -- power-cycle both
         on every switch between them. `stop_scene()` is for going to idle,
         where there is no incoming scene to save a device from that filter.
+
+        One `Transition` covers both macros, saved and restored around the
+        whole switch rather than just set once: the outgoing stop macro can
+        itself trigger a nested switch (a `SceneAction`, the same mechanism
+        the off button uses, or an "everything off" scene stopping another),
+        and once that inner switch finishes, `then`/`otherwise` still running
+        in *this* switch's macros must see this switch's own from/to again,
+        not the inner one's.
         """
         scene = self.config.scene(scene_id)
         if scene is None:
@@ -269,21 +307,33 @@ class SceneEngine:
             return
 
         leaving = self.config.scene(self.active_scene) if self.active_scene else None
+        from_scene = self.active_scene or ""
         # Set before the outgoing stop macro runs, not after: a stop macro
         # that switches straight back to this same scene_id (a `SceneAction`
         # in `on_stop`, however unlikely) must see the switch as already
         # under way and no-op, the same as pressing an active scene's own
         # activity button does.
         self.active_scene = scene_id
-        if leaving is not None:
-            await self.run_actions(
-                self._stop_actions(leaving, entering=scene),
-                source=f"scene '{leaving.id}' stop",
-                depth=depth,
-            )
 
-        self._publish(HubEvent(type="scene", scene=scene_id, ok=True, detail=f"Started {scene.name}"))
-        await self.run_actions(self._start_actions(scene), source=f"scene '{scene_id}' start", depth=depth)
+        previous = self._transition
+        self._transition = Transition(from_scene=from_scene, to_scene=scene_id)
+        try:
+            if leaving is not None:
+                await self.run_actions(
+                    self._stop_actions(leaving, entering=scene),
+                    source=f"scene '{leaving.id}' stop",
+                    depth=depth,
+                )
+
+            self._publish(
+                HubEvent(
+                    type="scene", scene=scene_id, from_scene=from_scene or None, ok=True,
+                    detail=f"Started {scene.name}",
+                )
+            )
+            await self.run_actions(self._start_actions(scene), source=f"scene '{scene_id}' start", depth=depth)
+        finally:
+            self._transition = previous
 
     async def stop_scene(self) -> None:
         """Runs the active scene's stop macro and returns to the idle state."""
@@ -291,9 +341,19 @@ class SceneEngine:
             return
         scene = self.config.scene(self.active_scene)
         stopped, self.active_scene = self.active_scene, None
-        self._publish(HubEvent(type="scene", scene=None, ok=True, detail=f"Stopped {scene.name if scene else stopped}"))
+        self._publish(
+            HubEvent(
+                type="scene", scene=None, from_scene=stopped, ok=True,
+                detail=f"Stopped {scene.name if scene else stopped}",
+            )
+        )
         if scene:
-            await self.run_actions(self._stop_actions(scene, entering=None), source=f"scene '{stopped}' stop")
+            previous = self._transition
+            self._transition = Transition(from_scene=stopped, to_scene="")
+            try:
+                await self.run_actions(self._stop_actions(scene, entering=None), source=f"scene '{stopped}' stop")
+            finally:
+                self._transition = previous
 
     def _stop_actions(self, leaving: Scene, entering: Optional[Scene]) -> List[Action]:
         """`leaving.on_stop`, with power-offs skipped for devices that should
@@ -778,7 +838,10 @@ class SceneEngine:
         raises `BackendError` if `name` was never `set`, the same failure
         shape a `state` value's unreachable device produces, so a
         `Condition`'s `on_unreadable` handling covers both without needing
-        to know which kind of value it was given.
+        to know which kind of value it was given. A `transition` is the odd
+        one out: it never raises, resolving to `""` even outside of a scene
+        switch -- see `Transition`'s own docstring for why treating that as
+        unreadable would be a worse bug than answering `""`.
         """
         if isinstance(value, LiteralValue):
             return value.value
@@ -787,6 +850,10 @@ class SceneEngine:
             if stored is None:
                 raise backends.BackendError(f"variable '{value.name}' has not been set yet")
             return stored
+        if isinstance(value, TransitionValue):
+            if self._transition is None:
+                return ""
+            return self._transition.from_scene if value.edge == "from" else self._transition.to_scene
         assert isinstance(value, StateValue)
         return await self._read_device_state(value.device, value.target, fresh=fresh)
 
@@ -916,7 +983,7 @@ class SceneEngine:
         parameter is a `Value` rather than a fixed string -- without typing
         every backend's own parameter schema against `Value` as well.
         """
-        if isinstance(raw, dict) and raw.get("type") in ("state", "var", "literal"):
+        if isinstance(raw, dict) and raw.get("type") in ("state", "var", "literal", "transition"):
             value = _VALUE_ADAPTER.validate_python(raw)
             return await self.read_value(value)
         return raw

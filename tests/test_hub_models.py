@@ -7,7 +7,16 @@ from pydantic import ValidationError
 
 from harmony_hub import config as config_module
 from harmony_hub import storage
-from harmony_hub.models import AdjustAction, Binding, Device, DeviceAction, HubConfig, Scene, SceneAction
+from harmony_hub.models import (
+    AdjustAction,
+    Binding,
+    Device,
+    DeviceAction,
+    HubConfig,
+    Scene,
+    SceneAction,
+    TransitionValue,
+)
 
 
 def make_config(**overrides) -> dict:
@@ -162,6 +171,90 @@ def test_a_scene_action_with_no_scene_means_stop():
     config = HubConfig.model_validate(broken)
 
     assert config.scene("watch_tv").bindings["off"].on_press[0].scene is None
+
+
+def _if_on(condition: dict) -> dict:
+    return {"type": "if", "condition": condition, "then": [], "otherwise": []}
+
+
+def test_a_transition_value_round_trips():
+    config = make_config()
+    config["scenes"][0]["on_start"].append(
+        _if_on({"left": {"type": "transition", "edge": "from"}, "op": "known"})
+    )
+    loaded = HubConfig.model_validate(config)
+
+    action = loaded.scene("watch_tv").on_start[-1]
+    assert isinstance(action.condition.left, TransitionValue)
+    assert action.condition.left.edge == "from"
+
+
+def test_a_transition_compared_against_an_unknown_scene_is_rejected():
+    config = make_config()
+    config["scenes"][0]["on_start"].append(
+        _if_on(
+            {
+                "left": {"type": "transition", "edge": "from"},
+                "op": "is",
+                "right": {"type": "literal", "value": "ghost"},
+            }
+        )
+    )
+
+    with pytest.raises(ValidationError, match="unknown scene 'ghost'"):
+        HubConfig.model_validate(config)
+
+
+def test_a_transition_compared_against_an_empty_literal_is_not_a_scene_reference():
+    """An empty literal means idle, not a scene named the empty string --
+    the one literal value a transition condition never has to name a real
+    scene to use."""
+    config = make_config()
+    config["scenes"][0]["on_start"].append(
+        _if_on(
+            {
+                "left": {"type": "transition", "edge": "from"},
+                "op": "is",
+                "right": {"type": "literal", "value": ""},
+            }
+        )
+    )
+
+    HubConfig.model_validate(config)  # does not raise
+
+
+def test_a_transition_compared_against_a_real_scene_is_accepted():
+    config = make_config(scenes=[*make_config()["scenes"], {"id": "music", "name": "Music"}])
+    config["scenes"][0]["on_start"].append(
+        _if_on(
+            {
+                "left": {"type": "transition", "edge": "to"},
+                "op": "is_not",
+                "right": {"type": "literal", "value": "music"},
+            }
+        )
+    )
+
+    HubConfig.model_validate(config)  # does not raise
+
+
+def test_an_ordinary_literal_condition_does_not_need_to_be_a_scene():
+    """Only a literal actually compared against a `transition` value is held
+    to "must be a real scene id" -- an ordinary condition's literal means
+    whatever it says.
+    """
+    config = make_config()
+    config["scenes"][0]["on_start"].append(
+        _if_on(
+            {
+                "left": {"type": "literal", "value": "anything"},
+                "op": "is",
+                "right": {"type": "literal", "value": "not-a-scene-id either"},
+            }
+        )
+    )
+
+    HubConfig.model_validate(config)  # does not raise
 
 
 def test_unknown_keys_are_rejected():

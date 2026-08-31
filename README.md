@@ -90,11 +90,8 @@ LG WebOS, Denon/Marantz, Android TV/Google TV, HomeAssistant Devices/Scenes/Enti
   a switch with one of the SmartHome keys, and +/- steps that same thing up
   or down — just like the original Remote. The Live tab  shows what they're currently pointed at.
 - **A scene's start/stop steps can branch on a condition.** Add an "If /
-  Otherwise" step and it can check a device's current state (is the TV
-  already on?), a value an earlier step remembered, or a fixed value you
-  type in — then run different steps depending on the answer. "Wait for a
-  condition" is the same idea for timing: instead of a fixed pause, wait
-  until the receiver actually reports itself on, up to a limit you set.
+  Otherwise" step and it can check a device's current state. Remember states and more.
+  Scene Transistions (from/to) is also in place
 - **Works on a phone screen too.** The layout adjusts automatically, so
   you're not stuck needing a full computer to make a change. (Remote only Fullscreen available and is remembered throught Sessions)
 

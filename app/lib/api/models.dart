@@ -413,6 +413,7 @@ class HubEvent {
     this.label,
     this.phase,
     this.scene,
+    this.fromScene,
     this.action,
     this.ok,
     this.detail,
@@ -424,6 +425,7 @@ class HubEvent {
               'label': ?label,
               'phase': ?phase,
               'scene': ?scene,
+              'from_scene': ?fromScene,
               'action': ?action,
               'ok': ?ok,
               'detail': ?detail,
@@ -438,6 +440,12 @@ class HubEvent {
   final String? label;
   final String? phase;
   final String? scene;
+
+  /// For a `"scene"` event, the scene being left -- `null` if none was
+  /// running (starting from idle) or a plain stop had nothing incoming to
+  /// report. The pair `TransitionValue` resolves inside the macros this
+  /// same switch runs.
+  final String? fromScene;
   final String? action;
   final bool? ok;
   final String? detail;
@@ -456,6 +464,7 @@ class HubEvent {
         label: json['label'] as String?,
         phase: json['phase'] as String?,
         scene: json['scene'] as String?,
+        fromScene: json['from_scene'] as String?,
         action: json['action'] as String?,
         ok: json['ok'] as bool?,
         detail: json['detail'] as String?,
@@ -468,7 +477,11 @@ class HubEvent {
         final tag = detail == 'unbound' ? '  (unbound)' : detail == 'paused' ? '  (paused)' : '';
         return '${label ?? button} ${phase ?? ''}$tag';
       case 'scene':
-        return detail ?? (scene ?? 'scene');
+        final base = detail ?? (scene ?? 'scene');
+        // Only a switch (not a plain stop, and not starting from idle) has
+        // both ends worth naming -- `detail` alone already says "Started
+        // X"/"Stopped X", so this is purely the "from" half it leaves out.
+        return (scene != null && fromScene != null) ? '$base (from $fromScene)' : base;
       case 'action':
         return '${action ?? ''}${detail != null ? '  ($detail)' : ''}';
       default:
@@ -494,7 +507,7 @@ class HubEvent {
   }
 
   /// Free text searched by the activity filter's search box.
-  String get searchText => [type, button, label, phase, scene, action, detail]
+  String get searchText => [type, button, label, phase, scene, fromScene, action, detail]
       .where((e) => e != null)
       .join(' ')
       .toLowerCase();

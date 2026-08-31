@@ -44,6 +44,12 @@ class HubEvent(BaseModel):
     label: Optional[str] = None  # human-readable button name
     phase: Optional[str] = None  # press / repeat / hold / release
     scene: Optional[str] = None
+    #: For a `"scene"` event, the scene being left -- `None` if none was
+    #: running (starting from idle) or this is a plain `stop_scene()` with
+    #: nothing incoming to report. Separate from `scene` (the one being
+    #: entered, or `None` for a stop) so the live log can show both ends of
+    #: a switch in one line, the same pair `TransitionValue` resolves.
+    from_scene: Optional[str] = None
     action: Optional[str] = None  # e.g. "living_room_tv.volume_up"
     ok: Optional[bool] = None
     detail: Optional[str] = None

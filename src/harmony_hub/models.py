@@ -166,7 +166,40 @@ class LiteralValue(Base):
         return f"'{self.value}'"
 
 
-Value = Annotated[Union[StateValue, VarValue, LiteralValue], Field(discriminator="type")]
+class TransitionValue(Base):
+    """Which scene the switch currently under way is moving between.
+
+    Meaningful only while a scene switch is actually happening -- inside an
+    `on_start` or `on_stop` macro, which is the only place `SceneEngine`
+    ever has one in hand. `edge="from"` is the scene being left, `edge="to"`
+    the one being entered; both are set once for the whole switch, so
+    `on_stop`'s condition sees exactly what `on_start`'s does.
+
+    Always resolves to a scene id or `""` -- never unreadable. `""` covers
+    both "the counterpart is idle" (no scene was running, or none is being
+    entered -- an explicit stop) and "nothing is switching at all" (read
+    from an ordinary button binding). Collapsing those is deliberate: unlike
+    `StateValue`/`VarValue`, where "cannot tell" is a real, distinct
+    possibility a condition's `on_unreadable` has to decide about, treating
+    "not currently switching" as unreadable would mean `on_unreadable`'s
+    default of `"run"` makes `is "watch_tv"` evaluate true from a plain
+    button press that never switched anything -- a wrong answer with no
+    warning. Resolving to `""` avoids that whole failure mode instead of
+    documenting around it, at the cost of `known`/`unknown` never being
+    useful against a transition value; the editor hides both operators once
+    the left side is one.
+    """
+
+    type: Literal["transition"] = "transition"
+    edge: Literal["from", "to"]
+
+    def describe(self) -> str:
+        return "scene switching from" if self.edge == "from" else "scene switching to"
+
+
+Value = Annotated[
+    Union[StateValue, VarValue, LiteralValue, TransitionValue], Field(discriminator="type")
+]
 
 ConditionOp = Literal["is", "is_not", "contains", "in", "gt", "lt", "known", "unknown"]
 
@@ -486,6 +519,22 @@ def _condition_devices(condition: Condition) -> Iterator[str]:
             yield device
 
 
+def _condition_transition_scenes(condition: Condition) -> Iterator[str]:
+    """A non-empty literal compared against a `transition` value names a
+    scene, the same as a `SceneAction.scene` does -- worth catching a typo or
+    a since-deleted scene here rather than only when a switch happens to
+    exercise it. `""` stays legal without being yielded (it means idle, not
+    a scene); a condition that does not involve `TransitionValue` at all
+    yields nothing, since an ordinary literal means whatever it says.
+    """
+    values = [condition.left] + ([condition.right] if condition.right is not None else [])
+    if not any(isinstance(v, TransitionValue) for v in values):
+        return
+    for value in values:
+        if isinstance(value, LiteralValue) and value.value:
+            yield value.value
+
+
 def _raw_state_device(raw: Any) -> Optional[str]:
     """The device id, if `raw` is a `state` value written as a plain dict
     inside a `DeviceAction`'s `params` -- e.g. `set_input`'s `source`
@@ -590,6 +639,9 @@ class HubConfig(Base):
                 for ref in _condition_devices(action.condition):
                     if ref not in device_ids:
                         problems.append(f"{where} condition reads unknown device '{ref}'")
+                for ref in _condition_transition_scenes(action.condition):
+                    if ref not in scene_ids:
+                        problems.append(f"{where} condition compares against unknown scene '{ref}'")
             elif isinstance(action, SetAction):
                 ref = _value_device(action.value)
                 if ref is not None and ref not in device_ids:

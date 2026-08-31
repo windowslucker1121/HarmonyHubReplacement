@@ -853,14 +853,86 @@ capability.
   `AdjustAction.device`, never at what a condition or a `set` happened to
   read from.
 * **The app's editor** (`ValueEditor`/`ConditionEditor` in
-  `app/lib/widgets/value_editor.dart`) is one widget for all three `Value`
-  kinds -- a segmented Fixed/Device/Variable choice, with a live "Currently:
-  ..." readout next to whichever device state is picked, refreshed on
-  demand. `if`'s `then`/`otherwise` are edited on a full page pushed from the
-  action dialog (`_IfBranchesPage`, two ordinary `ActionListEditor`s) rather
-  than inline -- two nested `ReorderableListView`s do not fit inside a
-  fixed-width dialog, the same reason the binding editor's own per-button
-  macros already live on their own page.
+  `app/lib/widgets/value_editor.dart`) is one widget for all four `Value`
+  kinds -- a segmented Fixed/Device/Variable/Scene-change choice, with a live
+  "Currently: ..." readout next to whichever device state is picked,
+  refreshed on demand. `if`'s `then`/`otherwise` are edited on a full page
+  pushed from the action dialog (`_IfBranchesPage`, two ordinary
+  `ActionListEditor`s) rather than inline -- two nested
+  `ReorderableListView`s do not fit inside a fixed-width dialog, the same
+  reason the binding editor's own per-button macros already live on their
+  own page.
+
+### Scene transitions -- from/to as a fourth `Value` kind
+
+"If coming from `watch_tv`, skip powering the TV on" needs to know which
+scene a switch is moving between. Rather than a new action type or a
+per-scene macro slot, this is `TransitionValue` (`type: "transition"`,
+`edge: "from" | "to"`) -- a fourth shape alongside `StateValue`/`VarValue`/
+`LiteralValue`. Because `Condition`, `IfAction`, `SetAction` and
+`WaitForAction` already take a `Value` wherever one fits, every existing
+feature composes with this for free: no engine or model change beyond the
+one new `Value` variant was needed to make `if`/`wait_for`/`set` all
+understand it.
+
+* **`SceneEngine._transition: Optional[Transition]`** (`Transition(from_scene,
+  to_scene)`, both plain `str`) is set once for the whole switch -- around
+  both the outgoing scene's stop macro and the incoming one's start macro --
+  in `activate_scene`, and around the stop macro alone in `stop_scene`
+  (`to_scene=""`, there is nothing incoming). `read_value` resolves a
+  `TransitionValue` against whichever field `edge` names.
+* **`active_scene` is set before the outgoing stop macro runs** (see
+  `activate_scene`'s own docstring, for the "a stop macro that switches back
+  to itself must no-op" reason that predates this feature) -- which means it
+  cannot be read to answer "what scene is this", since during a stop macro it
+  already names the *incoming* scene. `_transition` is captured explicitly
+  from the `leaving`/`scene_id` locals `activate_scene` already has in hand,
+  specifically to avoid that trap.
+* **Never unreadable -- resolves to `""` for "no scene" always, never
+  raises.** `""` covers two different things on purpose: the counterpart
+  being idle (switching from nothing, or an explicit stop with nothing
+  incoming) and no switch being under way at all (an ordinary button
+  binding, where `_transition` is `None`). Collapsing those is deliberate:
+  if "not currently switching" raised into `on_unreadable` instead, its
+  default of `"run"` would make `is "watch_tv"` evaluate true from a plain
+  button press that never switched anything -- a wrong answer with no
+  warning, worse than losing the (practically valueless) distinction between
+  the two idle cases. The cost: `known`/`unknown` are always true/false
+  against a transition value, so the app hides both operators once the left
+  side is one.
+* **One `Transition` per switch, saved and restored around nesting.** A stop
+  macro can itself trigger another switch -- a `SceneAction`, the same
+  mechanism the off button uses, or an "everything off" scene stopping
+  another (`activate_scene(depth + 1)`, the existing nesting `SceneAction`
+  already used before this feature). `activate_scene`/`stop_scene` save the
+  previous `self._transition` before setting their own and restore it in a
+  `finally`, so once a nested switch returns, whatever of the *outer*
+  switch's macro still has left to run sees the outer from/to again, not
+  the inner one's.
+* **`_check_references` validates a literal compared against a transition
+  the same way `SceneAction.scene` is validated** -- a typo'd or
+  since-deleted scene id is caught at config-load time. The empty literal
+  (`""`, meaning idle) is deliberately exempt: it never has to name a real
+  scene.
+* **`HubEvent` gained `from_scene`**, populated on the `"scene"` event
+  alongside the existing `scene` field -- `None` starting from idle or on a
+  plain stop with nothing incoming, otherwise the scene being left. Free on
+  the wire (`HubEvent` has no `extra="forbid"`) and free in the app: the
+  activity filter's facets already iterate whatever keys the event JSON
+  happens to carry.
+* **The app's scene picker for a transition's literal side is a dropdown
+  built from the already-loaded `HubConfig.scenes`**, not a new API call --
+  `ValueEditor`'s `sceneLiteralPicker` flag switches a 'literal' value's
+  field from free text to `(no scene -- idle)` plus every configured scene,
+  set by `ConditionEditor` on whichever side is *not* the transition one.
+
+**Where this does not replace existing machinery.** `_stop_actions` already
+drops a power-off automatically for any device the *incoming* scene still
+needs (see "Model" above) -- "don't power off the TV if the next scene needs
+it" is already handled without a condition. This feature earns its place in
+what policy cannot express: input switching, surround mode, a notification,
+"coming from a gaming scene so drop the receiver back to Movie" -- not as a
+hand-written reimplementation of the automatic power-off filter.
 
 ### Event sources
 
@@ -1204,3 +1276,23 @@ not by the unit tests alone.
    deliberately deferred, more opinionated pieces: a `button` entity per
    remote button (opt-in, 48 of them), and an `update` entity wired to the
    existing GitHub install path.
+7. **Warn when a hand-written power condition can be silently overridden by
+   the automatic power-policy filter.** `_stop_actions`/`_start_actions`
+   (see "Model" above) already drop a device's power-on/power-off command
+   for reasons of their own -- `entering.required_devices()`, `leave_on`,
+   `manual` -- and that filtering applies to *every* `DeviceAction` in
+   `on_start`/`on_stop`, including one sitting inside an `if` gated on a
+   `TransitionValue` (see "Scene transitions" above). A scene author who
+   writes "if coming from `gaming`, power off the receiver" can watch that
+   condition evaluate true and the power-off still never reach the device,
+   because the scene being entered also declares needing that receiver --
+   the two mechanisms are not aware of each other, and nothing today tells
+   the author their condition was moot before it ever ran. Worth a
+   config-validation or editor-time warning (not a hard error, since the
+   combination is not always wrong) whenever a `DeviceAction` targeting a
+   device's `power_on_name()`/`power_off_name()` sits inside an `if`/
+   `wait_for` branch anywhere in `on_start`/`on_stop` -- something like "this
+   power command may be skipped by the scene's own power-policy filter,
+   independently of this condition." Not started; no design for where the
+   check should live (model-level, alongside `_check_references`, or purely
+   in the app) or exactly how noisy it should be.

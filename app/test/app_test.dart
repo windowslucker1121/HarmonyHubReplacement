@@ -1496,6 +1496,110 @@ void main() {
     expect(action.condition?.right?.value, 'on');
   });
 
+  testWidgets('a condition can check which scene the switch is coming from', (tester) async {
+    final api = FakeApi();
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('If'));
+    await tester.pumpAndSettle();
+
+    // Left side: switch from "Fixed" to "Scene change" -- scoped to the
+    // left `ValueEditor` by key, the same reason the device-state test
+    // scopes its own kind switch.
+    await tester.tap(find.descendant(
+      of: find.byKey(const ValueKey('condition-left')),
+      matching: find.text('Scene change'),
+    ));
+    await tester.pumpAndSettle();
+
+    // Defaults to "from"; the right side becomes a scene picker the moment
+    // the left side is a transition, rather than free text.
+    expect(find.text('The scene being left'), findsOneWidget);
+    await tester.tap(find.widgetWithText(DropdownButtonFormField<String>, 'Scene'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Standby').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final action = api.saved.scenes.first.bindings['volume_up']!.onPress.last;
+    expect(action.condition?.left.type, 'transition');
+    expect(action.condition?.left.edge, 'from');
+    expect(action.condition?.right?.type, 'literal');
+    expect(action.condition?.right?.value, 'standby');
+  });
+
+  testWidgets('known/unknown are hidden once the left side is a scene change', (tester) async {
+    final api = FakeApi();
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('If'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.descendant(
+      of: find.byKey(const ValueKey('condition-left')),
+      matching: find.text('Scene change'),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(DropdownButtonFormField<String>, 'Compared how'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('is'), findsWidgets);
+    expect(find.text('can be read'), findsNothing);
+    expect(find.text('cannot be read'), findsNothing);
+  });
+
+  testWidgets('the idle option in the scene picker saves as an empty literal', (tester) async {
+    final api = FakeApi();
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('If'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.descendant(
+      of: find.byKey(const ValueKey('condition-left')),
+      matching: find.text('Scene change'),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(DropdownButtonFormField<String>, 'Scene'));
+    await tester.pumpAndSettle();
+    // The empty literal ('') already maps to this item, so it is also the
+    // dropdown's own initial value -- shown once behind the open menu and
+    // once inside it, the same double-match the device-state test works
+    // around; `.last` is the menu's own copy.
+    await tester.tap(find.text('(no scene -- idle)').last);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final action = api.saved.scenes.first.bindings['volume_up']!.onPress.last;
+    expect(action.condition?.right?.type, 'literal');
+    expect(action.condition?.right?.value, '');
+  });
+
   testWidgets('a scene binds buttons on the picture of the remote', (tester) async {
     tester.view.physicalSize = const Size(1400, 1800);
     tester.view.devicePixelRatio = 1.0;
