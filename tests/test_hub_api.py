@@ -147,6 +147,93 @@ def test_commands_for_an_unknown_device_are_a_404(client):
 
 
 # ---------------------------------------------------------------------------
+# Reading device state, for a scene's conditions
+# ---------------------------------------------------------------------------
+
+READABLE_CONFIG = {
+    "version": 1,
+    "devices": [
+        {
+            "id": "tv", "name": "TV", "backend": "virtual",
+            "config": {"commands": ["power_on"], "state": {"power": "standby"}},
+        },
+    ],
+    "scenes": [],
+    "global_scene": None,
+}
+
+
+@pytest.fixture
+def readable_client(tmp_path):
+    config_path = tmp_path / "hub_config.json"
+    buttons_path = tmp_path / "buttons.json"
+    config_path.write_text(json.dumps(READABLE_CONFIG), encoding="utf-8")
+    buttons_path.write_text(json.dumps(BUTTONS), encoding="utf-8")
+
+    app = create_app(
+        HubSettings(config_path=config_path, buttons_path=buttons_path),
+        settings_path=tmp_path / "hub_settings.json",
+    )
+    with TestClient(app) as client:
+        yield client
+
+
+def test_backends_say_whether_a_condition_could_read_them(readable_client):
+    names = {b["name"]: b for b in readable_client.get("/api/backends").json()}
+
+    assert names["virtual"]["readable"] is True
+
+
+def test_readable_lists_what_a_condition_could_check(readable_client):
+    targets = readable_client.get("/api/devices/tv/readable").json()
+
+    assert targets == [{"target": "power", "label": "power", "values": [], "description": ""}]
+
+
+def test_state_answers_the_current_value(readable_client):
+    assert readable_client.get("/api/devices/tv/state/power").json() == {"value": "standby"}
+
+
+def test_state_reflects_a_command_that_already_ran(readable_client):
+    """`power_on` has no `state_effects` configured here, so the state stays
+    `standby` -- this is checking that the route reads live, not a snapshot
+    frozen at startup, which a state_effects-driven flip would not tell
+    apart from a route that just replays the config it was given.
+    """
+    config = readable_client.get("/api/config").json()
+    config["devices"][0]["config"]["state_effects"] = {"power_on": {"power": "on"}}
+    readable_client.put("/api/config", json=config)
+
+    readable_client.post("/api/devices/tv/test", json={"command": "power_on"})
+    assert readable_client.get("/api/devices/tv/state/power").json() == {"value": "on"}
+
+
+def test_state_of_an_unknown_target_is_a_409_not_a_500(readable_client):
+    response = readable_client.get("/api/devices/tv/state/ghost")
+
+    assert response.status_code == 409
+
+
+def test_readable_for_an_unknown_device_is_a_404(readable_client):
+    assert readable_client.get("/api/devices/ghost/readable").status_code == 404
+
+
+def test_variables_start_empty_and_report_what_a_scene_has_set(readable_client):
+    scene = {
+        "id": "s", "name": "S", "devices": ["tv"],
+        "on_start": [{"type": "set", "name": "prev", "value": {"type": "state", "device": "tv", "target": "power"}}],
+    }
+    config = readable_client.get("/api/config").json()
+    config["scenes"] = [scene]
+    readable_client.put("/api/config", json=config)
+
+    assert readable_client.get("/api/variables").json() == []
+
+    readable_client.post("/api/scenes/s/activate")
+    assert readable_client.get("/api/variables").json() == [{"name": "prev", "value": "standby"}]
+
+
+# ---------------------------------------------------------------------------
 # Pairing
 # ---------------------------------------------------------------------------
 

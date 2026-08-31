@@ -173,6 +173,7 @@ class BackendInfo {
     this.learnLabel = '',
     this.learnHint = '',
     this.learnVerifiable = false,
+    this.readable = false,
   });
 
   final String name;
@@ -224,6 +225,12 @@ class BackendInfo {
   /// nothing to play it back through.
   final bool learnVerifiable;
 
+  /// Whether `/api/devices/{id}/readable` and `/api/devices/{id}/state/...`
+  /// exist for this backend -- comes from the hub for the same reason
+  /// `pairable` does: the app should not keep its own list of which
+  /// backend names can answer a scene condition's "what is this doing".
+  final bool readable;
+
   /// Top-level schema properties, which is what the generated form renders.
   Map<String, dynamic> get properties =>
       (configSchema['properties'] as Map?)?.cast<String, dynamic>() ?? {};
@@ -244,6 +251,7 @@ class BackendInfo {
         learnLabel: (json['learn_label'] ?? '') as String,
         learnHint: (json['learn_hint'] ?? '') as String,
         learnVerifiable: (json['learn_verifiable'] ?? false) as bool,
+        readable: (json['readable'] ?? false) as bool,
       );
 }
 
@@ -317,6 +325,49 @@ class EntityInfo {
         domain: json['domain'] as String,
         state: (json['state'] ?? '') as String,
         controllable: (json['controllable'] ?? true) as bool,
+      );
+}
+
+/// One thing a device can report the state of, for the condition editor's
+/// target picker -- what `Backend.readable()` offers, mirrored over the
+/// wire.
+class StateTargetInfo {
+  StateTargetInfo({
+    required this.target,
+    required this.label,
+    this.values = const [],
+    this.description = '',
+  });
+
+  final String target;
+  final String label;
+
+  /// Known values this target can take, e.g. `["on", "standby"]` for a
+  /// power state -- lets the condition editor offer a dropdown instead of
+  /// free text. Empty means the value space is open (a volume level, an
+  /// input name) and free text is the only option anyway.
+  final List<String> values;
+  final String description;
+
+  factory StateTargetInfo.fromJson(Map<String, dynamic> json) => StateTargetInfo(
+        target: json['target'] as String,
+        label: json['label'] as String,
+        values: ((json['values'] ?? []) as List).cast<String>(),
+        description: (json['description'] ?? '') as String,
+      );
+}
+
+/// One value a `set` action has stored, for the live view and the `var`
+/// value picker to show what is actually available to recall right now.
+class VariableInfo {
+  VariableInfo({required this.name, required this.value});
+
+  final String name;
+  final String value;
+
+  factory VariableInfo.fromJson(Map<String, dynamic> json) => VariableInfo(
+        name: json['name'] as String,
+        value: json['value'] as String,
       );
 }
 

@@ -7,6 +7,7 @@ This project listens to your existing Harmony remote and lets you decide what ev
 
 - **Pair & Listen to Harmony Remote** — Pair your Remote with or without a Hub in place
 - **Scenes** — Watch TV, Listen to Music, Start Gaming - Starting one Scene changes what every button on the remote directs to
+- **Scenes can check before they act** — "only turn the TV on if it's off", "wait for the receiver to actually come on before picking the input" - no more guessing with a fixed delay
 - **A picture of your actual remote** — set things up by tapping buttons on
   a picture of the remote, not by memorizing button names - Everything can be controlled from the UI aswell
 - **Works from your phone or a browser** 
@@ -88,6 +89,12 @@ LG WebOS, Denon/Marantz, Android TV/Google TV, HomeAssistant Devices/Scenes/Enti
 - **The +/- keys always mean "the thing I just touched."** Toggle a light or
   a switch with one of the SmartHome keys, and +/- steps that same thing up
   or down — just like the original Remote. The Live tab  shows what they're currently pointed at.
+- **A scene's start/stop steps can branch on a condition.** Add an "If /
+  Otherwise" step and it can check a device's current state (is the TV
+  already on?), a value an earlier step remembered, or a fixed value you
+  type in — then run different steps depending on the answer. "Wait for a
+  condition" is the same idea for timing: instead of a fixed pause, wait
+  until the receiver actually reports itself on, up to a limit you set.
 - **Works on a phone screen too.** The layout adjusts automatically, so
   you're not stuck needing a full computer to make a change. (Remote only Fullscreen available and is remembered throught Sessions)
 

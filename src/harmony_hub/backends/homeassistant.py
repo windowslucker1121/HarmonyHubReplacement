@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from . import Backend, BackendError, Command, FocusTarget, Health, Pairable, register
+from . import Backend, BackendError, Command, FocusTarget, Health, Pairable, Readable, StateTarget, register
 
 logger = logging.getLogger("HUB.homeassistant")
 
@@ -253,7 +253,7 @@ def build_client(url: str, token: str, timeout: float, verify: bool) -> httpx.As
 
 
 @register
-class HomeAssistantBackend(Backend, Pairable):
+class HomeAssistantBackend(Backend, Pairable, Readable):
     """One Home Assistant instance, exposing the entities picked from it."""
 
     name = "homeassistant"
@@ -619,6 +619,29 @@ class HomeAssistantBackend(Backend, Pairable):
             return None
         verb = next((v for v in verbs_for(target) if v.adjust == direction), None)
         return f"{verb.name}:{target}" if verb else None
+
+    # -- state --------------------------------------------------------------
+
+    async def readable(self) -> List[StateTarget]:
+        """One target per exposed entity -- built from configuration, not a
+        live instance, the same reason `commands()` is: a scene's conditions
+        stay editable while Home Assistant is unreachable.
+        """
+        return [
+            StateTarget(target=entity_id, label=self._names.get(entity_id) or _titled(entity_id))
+            for entity_id in self.exposed
+        ]
+
+    async def read_state(self, target: str) -> str:
+        """The entity's own `state` string -- `"on"`, `"off"`, a media
+        player's `"playing"` -- not one of its attributes. A condition that
+        needs an attribute (brightness, volume level) is not supported yet;
+        `target` is restricted to what was actually exposed, the same
+        boundary `send()` enforces for commands.
+        """
+        if target not in self.exposed:
+            raise BackendError(f"device '{self.device_id}' has no state '{target}'")
+        return await self._entity_state(target)
 
     async def send(self, command: str, params: Optional[Dict[str, Any]] = None) -> None:
         declared = self._declared.get(command)

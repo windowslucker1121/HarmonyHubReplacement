@@ -19,7 +19,7 @@ that are worth copying rather than reinventing:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, Iterator, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -114,9 +114,176 @@ class AdjustAction(Base):
         return f"adjust {arrow}: whatever was touched last"
 
 
+# --------------------------------------------------------------------------
+# Values & conditions
+# --------------------------------------------------------------------------
+
+
+class StateValue(Base):
+    """A device's current state, read live when this value is needed.
+
+    The `device`/`target` pair is exactly what `Backend.read_state` takes --
+    `target` is backend-private the same way a command name is, chosen from
+    whatever the device's own `readable()` offers.
+    """
+
+    type: Literal["state"] = "state"
+    device: str
+    target: str
+
+    def describe(self) -> str:
+        return f"{self.device}.{self.target}"
+
+
+class VarValue(Base):
+    """A value a `SetAction` stored earlier, recalled by name.
+
+    Unset until some `set` action for `name` has actually run -- there is no
+    config-time default, since the entire point is capturing something the
+    engine could not know until a scene was under way. Reading one that was
+    never set behaves as `SceneEngine.variables` documents: the same as an
+    unreadable device state.
+    """
+
+    type: Literal["var"] = "var"
+    name: str = Field(pattern=r"^[a-z0-9_]+$")
+
+    def describe(self) -> str:
+        return f"${self.name}"
+
+
+class LiteralValue(Base):
+    """A value fixed in configuration -- what an ordinary condition compared
+    against before `Value` existed, expressed as the same type as the other
+    two so a condition's two sides, or a `set` action's source, are never a
+    special case depending on which kind of value they happen to be.
+    """
+
+    type: Literal["literal"] = "literal"
+    value: str = ""
+
+    def describe(self) -> str:
+        return f"'{self.value}'"
+
+
+Value = Annotated[Union[StateValue, VarValue, LiteralValue], Field(discriminator="type")]
+
+ConditionOp = Literal["is", "is_not", "contains", "in", "gt", "lt", "known", "unknown"]
+
+
+class Condition(Base):
+    """One thing to check before running a branch of actions.
+
+    `known` and `unknown` ask whether `left` could be read at all, rather
+    than comparing it to anything -- `right` must be left unset for either.
+    Every other operator compares `left` against `right` as plain strings;
+    `gt` and `lt` additionally try to parse both as numbers, and behave as
+    `on_unreadable` describes if either does not parse.
+
+    `on_unreadable` decides what happens when `left` cannot be read at all --
+    the device is offline, is not a `Readable` backend, or (for a `var`
+    value) was never set. `"run"`, the default, matches the engine's
+    behaviour before conditions existed: nothing here ever stops a macro
+    just because a read failed. `"skip"` is for the opposite case, where
+    acting on a guess is worse than doing nothing -- never power off a
+    device this cannot confirm is actually on.
+    """
+
+    left: Value
+    op: ConditionOp = "is"
+    right: Optional[Value] = None
+    on_unreadable: Literal["run", "skip"] = "run"
+
+    @model_validator(mode="after")
+    def _check_operands(self) -> "Condition":
+        needs_right = self.op not in ("known", "unknown")
+        if needs_right and self.right is None:
+            raise ValueError(f"condition '{self.op}' needs a value to compare against")
+        if not needs_right and self.right is not None:
+            raise ValueError(f"condition '{self.op}' does not compare against anything")
+        return self
+
+    def describe(self) -> str:
+        if self.op in ("known", "unknown"):
+            return f"{self.left.describe()} is {self.op}"
+        return f"{self.left.describe()} {self.op} {self.right.describe()}"
+
+
+class IfAction(Base):
+    """Runs `then` if `condition` holds, `otherwise` if it does not.
+
+    The general form every simpler case reduces to: a single action gated on
+    a condition is just a one-action `then` with an empty `otherwise`, and
+    "turn the TV on, wait, then pick the input -- but only if it was off" is
+    the block written exactly as it reads. `otherwise` rather than `else`,
+    which Dart reserves -- both branches nest to `MAX_ACTION_DEPTH`, the same
+    bound scene-switching actions already share.
+    """
+
+    type: Literal["if"] = "if"
+    condition: Condition
+    then: List["Action"] = Field(default_factory=list)
+    otherwise: List["Action"] = Field(default_factory=list)
+
+    def describe(self) -> str:
+        return f"if {self.condition.describe()}"
+
+
+class SetAction(Base):
+    """Remembers `value` under `name`, for a later `var` value to recall.
+
+    The store is hub-lifetime, not scoped to the scene that set it or to one
+    press -- see `SceneEngine.variables`. Not scoping it to the scene is
+    deliberate: "the input the TV was on before this scene changed it" is
+    exactly as useful read back from a different scene's stop macro as from
+    this one's own.
+    """
+
+    type: Literal["set"] = "set"
+    name: str = Field(pattern=r"^[a-z0-9_]+$")
+    value: Value
+
+    def describe(self) -> str:
+        return f"set {self.name} = {self.value.describe()}"
+
+
+class WaitForAction(Base):
+    """Polls `condition` until it holds, or `timeout` runs out.
+
+    The honest replacement for a fixed `DelayAction` used as a guess: "wait 2
+    seconds and hope the TV is on by then" becomes "wait until the TV
+    reports on, for up to `timeout` seconds". `poll` is how often to check in
+    between, kept separate from `timeout` so a device that answers instantly
+    is not hammered every 100ms while a slow one is waited on.
+
+    `on_timeout` decides how a timeout is reported, not whether the macro
+    keeps going -- nothing in this engine lets one action's failure cancel
+    its siblings, `run_actions` least of all. `"continue"` (the default)
+    logs it as an ordinary, successful step; `"stop"` raises instead, so it
+    is logged as a failure the way an unreachable device would be -- for the
+    step that genuinely went wrong rather than merely being skippable, even
+    though whatever comes after it in the macro still runs either way.
+    """
+
+    type: Literal["wait_for"] = "wait_for"
+    condition: Condition
+    timeout: float = Field(default=10.0, gt=0, le=120)
+    poll: float = Field(default=0.5, gt=0, le=10)
+    on_timeout: Literal["continue", "stop"] = "continue"
+
+    def describe(self) -> str:
+        return f"wait for {self.condition.describe()}"
+
+
 Action = Annotated[
-    Union[DeviceAction, SceneAction, DelayAction, AdjustAction], Field(discriminator="type")
+    Union[DeviceAction, SceneAction, DelayAction, AdjustAction, IfAction, SetAction, WaitForAction],
+    Field(discriminator="type"),
 ]
+
+# `IfAction.then`/`otherwise` refer to `Action` before it exists -- rebuilt
+# now that it does, so the forward reference resolves deterministically at
+# import time rather than on whatever request happens to validate one first.
+IfAction.model_rebuild()
 
 
 # --------------------------------------------------------------------------
@@ -262,14 +429,28 @@ class Scene(Base):
         with where it came from -- the same traversal `HubConfig._all_actions`
         needs for validation and the engine needs to work out which devices a
         scene actually touches when `devices` itself is left empty.
+
+        An `IfAction`'s `then`/`otherwise` are walked too, so a `DeviceAction`
+        buried inside a condition is validated and counted towards
+        `required_devices()` exactly as one sitting at the top level would be
+        -- neither of those should care that a branch happens to be
+        conditional. The two branches share their parent's `where` label
+        rather than growing their own: precise enough to find the binding a
+        validation error came from, without a label that grows one clause
+        longer per nesting level.
         """
-        for label, actions in (("on_start", self.on_start), ("on_stop", self.on_stop)):
+        def walk(actions: List[Action], where: str) -> Iterator["tuple[str, Action]"]:
             for action in actions:
-                yield f"scene '{self.id}'.{label}", action
+                yield where, action
+                if isinstance(action, IfAction):
+                    yield from walk(action.then, where)
+                    yield from walk(action.otherwise, where)
+
+        for label, actions in (("on_start", self.on_start), ("on_stop", self.on_stop)):
+            yield from walk(actions, f"scene '{self.id}'.{label}")
         for key, binding in self.bindings.items():
             for phase in ("press", "repeat", "hold", "release"):
-                for action in binding.actions_for(phase):
-                    yield f"scene '{self.id}' binding '{key}'.on_{phase}", action
+                yield from walk(binding.actions_for(phase), f"scene '{self.id}' binding '{key}'.on_{phase}")
 
     def required_devices(self) -> "set[str]":
         """Which devices this scene depends on.
@@ -288,6 +469,35 @@ class Scene(Base):
             for _, action in self.actions()
             if isinstance(action, (DeviceAction, AdjustAction)) and action.device
         }
+
+
+def _value_device(value: Optional[Value]) -> Optional[str]:
+    """The device a `state` value reads from, or `None` for a `var`/`literal`
+    value -- which name nothing that `HubConfig._check_references` could
+    validate.
+    """
+    return value.device if isinstance(value, StateValue) else None
+
+
+def _condition_devices(condition: Condition) -> Iterator[str]:
+    for value in (condition.left, condition.right):
+        device = _value_device(value)
+        if device is not None:
+            yield device
+
+
+def _raw_state_device(raw: Any) -> Optional[str]:
+    """The device id, if `raw` is a `state` value written as a plain dict
+    inside a `DeviceAction`'s `params` -- e.g. `set_input`'s `source`
+    restoring whatever another device last reported. `params` stays untyped
+    (`Dict[str, Any]`) rather than a schema that would have to describe
+    every command's own parameters twice; `SceneEngine._resolve_param`
+    recognises the same shape at the point a macro actually runs.
+    """
+    if isinstance(raw, dict) and raw.get("type") == "state":
+        device = raw.get("device")
+        return str(device) if device else None
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -365,12 +575,25 @@ class HubConfig(Base):
                     problems.append(f"scene '{scene.id}' lists unknown device '{device_id}'")
 
         for where, action in self._all_actions():
-            if isinstance(action, DeviceAction) and action.device not in device_ids:
-                problems.append(f"{where} targets unknown device '{action.device}'")
+            if isinstance(action, DeviceAction):
+                if action.device not in device_ids:
+                    problems.append(f"{where} targets unknown device '{action.device}'")
+                for param_name, raw in action.params.items():
+                    ref = _raw_state_device(raw)
+                    if ref is not None and ref not in device_ids:
+                        problems.append(f"{where} param '{param_name}' reads unknown device '{ref}'")
             elif isinstance(action, SceneAction) and action.scene and action.scene not in scene_ids:
                 problems.append(f"{where} targets unknown scene '{action.scene}'")
             elif isinstance(action, AdjustAction) and action.device and action.device not in device_ids:
                 problems.append(f"{where} falls back to unknown device '{action.device}'")
+            elif isinstance(action, (IfAction, WaitForAction)):
+                for ref in _condition_devices(action.condition):
+                    if ref not in device_ids:
+                        problems.append(f"{where} condition reads unknown device '{ref}'")
+            elif isinstance(action, SetAction):
+                ref = _value_device(action.value)
+                if ref is not None and ref not in device_ids:
+                    problems.append(f"{where} sets from unknown device '{ref}'")
 
         if self.default_scene and self.default_scene not in scene_ids:
             problems.append(f"default_scene '{self.default_scene}' does not exist")

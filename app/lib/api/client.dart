@@ -302,6 +302,26 @@ class HubApi {
           .map((e) => EntityInfo.fromJson(e as Map<String, dynamic>))
           .toList();
 
+  /// What a device can report the state of, for a condition's target picker.
+  /// Only backends the hub flagged `readable` in `/api/backends` have
+  /// anything to answer here.
+  Future<List<StateTargetInfo>> deviceReadable(String deviceId) async =>
+      ((await _get('/api/devices/$deviceId/readable')) as List)
+          .map((e) => StateTargetInfo.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+  /// The current value of one state target, read fresh -- for the condition
+  /// editor's "currently: ..." readout next to whatever target is picked.
+  Future<String> deviceState(String deviceId, String target) async =>
+      ((await _get('/api/devices/$deviceId/state/$target')) as Map<String, dynamic>)['value'] as String;
+
+  /// Every value a `set` action has stored in the running engine, for the
+  /// `var` value picker to show what is actually available to recall.
+  Future<List<VariableInfo>> variables() async =>
+      ((await _get('/api/variables')) as List)
+          .map((e) => VariableInfo.fromJson(e as Map<String, dynamic>))
+          .toList();
+
   // ----------------------------------------------------------------------
   // Remote update. A signed push from a dev machine with `harmony-deploy`
   // still needs nothing from the app beyond `version`/`updateHistory`/

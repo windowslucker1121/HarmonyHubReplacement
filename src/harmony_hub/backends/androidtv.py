@@ -28,7 +28,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import Backend, BackendError, Command, Health, Pairable, register
+from . import Backend, BackendError, Command, Health, Pairable, Readable, StateTarget, register
 
 logger = logging.getLogger("HUB.androidtv")
 
@@ -313,7 +313,7 @@ COMMANDS: List[Command] = _build_commands()
 
 
 @register
-class AndroidTvBackend(Backend, Pairable):
+class AndroidTvBackend(Backend, Pairable, Readable):
     """One Android TV device -- an Nvidia Shield, a Chromecast, a smart TV."""
 
     name = "androidtv"
@@ -636,6 +636,28 @@ class AndroidTvBackend(Backend, Pairable):
         if self._remote.current_app:
             parts.append(self._remote.current_app)
         return Health(ok=True, detail=" · ".join(parts))
+
+    # -- state --------------------------------------------------------------
+
+    async def readable(self) -> List[StateTarget]:
+        return [
+            StateTarget(target="power", label="Power", values=("on", "standby")),
+            StateTarget(target="app", label="Current app"),
+        ]
+
+    async def read_state(self, target: str) -> str:
+        """Answered from the client's own cached state, the same as `health()` --
+        no round trip to the device. `power` is `standby` for anything short
+        of a live, on connection; every other target needs one to mean
+        anything.
+        """
+        if target == "power":
+            return "on" if self._connected and self._remote.is_on else "standby"
+        if not self._connected:
+            raise BackendError(f"device '{self.device_id}' is {self._state}: {self._detail}")
+        if target == "app":
+            return str(self._remote.current_app or "")
+        raise BackendError(f"device '{self.device_id}' has no state '{target}'")
 
     # -- pairing ----------------------------------------------------------
 

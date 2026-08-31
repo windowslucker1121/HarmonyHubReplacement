@@ -15,7 +15,9 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from pydantic import TypeAdapter
 
 from harmony_receiver.events import RemoteEvent
 from harmony_receiver.profiles import ButtonMap
@@ -26,21 +28,48 @@ from .models import (
     Action,
     AdjustAction,
     Binding,
+    Condition,
     DelayAction,
+    Device,
     DeviceAction,
     HubConfig,
+    IfAction,
+    LiteralValue,
     PowerPolicy,
     Scene,
     SceneAction,
+    SetAction,
+    StateValue,
+    Value,
+    VarValue,
+    WaitForAction,
 )
 
 logger = logging.getLogger("HUB.engine")
 
-# How far a chain of scene-switching actions may nest before the engine
-# assumes the configuration loops. Scenes triggering scenes is legitimate
-# (an "everything off" scene stopping another), but a cycle would otherwise
-# spin forever.
+# How far a chain of actions may nest before the engine assumes the
+# configuration loops: scenes triggering scenes (an "everything off" scene
+# stopping another is legitimate) and `if` actions nesting inside their own
+# `then`/`otherwise`. Both share this one bound rather than each getting
+# their own -- five levels of either is already pathological, and a chain
+# mixing both kinds still has to stop somewhere.
 MAX_ACTION_DEPTH = 5
+
+# How long a device-state read stays good for once fetched. Short enough
+# that a `wait_for` polling for a change is never more than a beat behind
+# reality, long enough that a scene checking the same device's state twice
+# in one run -- an `if` inside another `if`'s `then` -- costs one network
+# round trip rather than two. `wait_for` bypasses this deliberately (see
+# `_read_device_state`'s `fresh` argument): a cached answer would be exactly
+# the stale value it is polling to get past.
+STATE_READ_TTL = 1.0
+
+#: A raw `Value`, before it is resolved. Validated with a `TypeAdapter`
+#: rather than a full model so a `DeviceAction`'s untyped `params` can carry
+#: one without `params` itself needing to be typed -- see
+#: `_maybe_value_dict` and `models._raw_state_device`, which recognise the
+#: same shape without importing this.
+_VALUE_ADAPTER: TypeAdapter = TypeAdapter(Value)
 
 # An action that has not finished by now is not going to; a wedged backend
 # must not hold up the rest of the macro or the next button press.
@@ -108,6 +137,19 @@ class SceneEngine:
         #: anything has been touched, or after `stop()`.
         self._focus: Optional[Focus] = None
 
+        #: What every `SetAction` has stored, by name -- what a `var` value
+        #: recalls. Hub-lifetime and not persisted, the same as `_focus`:
+        #: cleared by `stop()`, kept across `reload()` since saving an edit
+        #: in the UI is not a restart. Public because the API reports it
+        #: directly (`GET /api/variables`) the same way `focus` is.
+        self.variables: Dict[str, str] = {}
+
+        #: `(device_id, target) -> (read at, value)`, so an `if` that checks
+        #: the same state twice in one macro run costs one backend round
+        #: trip rather than two. See `STATE_READ_TTL` for the lifetime and
+        #: why `wait_for` bypasses this entirely.
+        self._state_cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
+
         self._backends: Dict[str, backends.Backend] = {}
         # Buttons whose press is being held back while we wait to see if it
         # turns into a hold. Keyed by button; the bool records whether the
@@ -147,6 +189,8 @@ class SceneEngine:
         self._credits.clear()
         self._ramp_elapsed.clear()
         self._focus = None
+        self.variables.clear()
+        self._state_cache.clear()
         await self._close_backends()
 
     async def reload(self, config: HubConfig) -> None:
@@ -266,29 +310,20 @@ class SceneEngine:
 
         A stop macro that ends up with nothing left but delays is skipped
         outright rather than run: waiting accomplishes nothing once every
-        action after the wait has been filtered out.
+        action after the wait has been filtered out. `_filter_actions`
+        applies that same rule inside every `if` branch it touches too.
         """
         keep = {d.id for d in self.config.devices if d.power_policy is PowerPolicy.MANUAL}
         if entering is not None:
             keep |= entering.required_devices()
             keep |= {d.id for d in self.config.devices if d.power_policy is PowerPolicy.LEAVE_ON}
 
-        kept: List[Action] = []
-        for action in leaving.on_stop:
-            device = self.config.device(action.device) if isinstance(action, DeviceAction) else None
-            if device is not None and device.is_power_off(action.command) and device.id in keep:
-                self._publish(
-                    HubEvent(
-                        type="action", action=action.describe(), ok=True,
-                        detail=f"skipped -- {device.name} is still in use",
-                    )
-                )
-                continue
-            kept.append(action)
+        def should_drop(device: Device, action: DeviceAction) -> Optional[str]:
+            if device.is_power_off(action.command) and device.id in keep:
+                return f"skipped -- {device.name} is still in use"
+            return None
 
-        if kept and all(isinstance(a, DelayAction) for a in kept):
-            return []
-        return kept
+        return self._collapse_delays(self._filter_actions(leaving.on_stop, should_drop))
 
     def _start_actions(self, entering: Scene) -> List[Action]:
         """`entering.on_start`, with power commands dropped for `manual` devices.
@@ -304,21 +339,56 @@ class SceneEngine:
         if not manual:
             return entering.on_start
 
+        def should_drop(device: Device, action: DeviceAction) -> Optional[str]:
+            if device.id in manual and (device.is_power_on(action.command) or device.is_power_off(action.command)):
+                return f"skipped -- {device.name} is set to manual power"
+            return None
+
+        return self._filter_actions(entering.on_start, should_drop)
+
+    def _filter_actions(
+        self, actions: List[Action], should_drop: Callable[[Device, DeviceAction], Optional[str]]
+    ) -> List[Action]:
+        """Recursively applies a scene-transition filter -- see `_stop_actions`
+        and `_start_actions`, its only two callers, for what `should_drop`
+        actually decides.
+
+        Descends into an `IfAction`'s `then` and `otherwise` so a
+        `DeviceAction` gated on a condition is spared or dropped exactly as
+        one sitting at the top level would be; a branch left with nothing but
+        delays after filtering is collapsed the same way `_stop_actions`
+        already collapses its own top level, and an `if` whose branches both
+        end up empty is dropped outright rather than kept around to evaluate
+        a condition for no reason.
+        """
         kept: List[Action] = []
-        for action in entering.on_start:
-            device = self.config.device(action.device) if isinstance(action, DeviceAction) else None
-            if device is not None and device.id in manual and (
-                device.is_power_on(action.command) or device.is_power_off(action.command)
-            ):
-                self._publish(
-                    HubEvent(
-                        type="action", action=action.describe(), ok=True,
-                        detail=f"skipped -- {device.name} is set to manual power",
-                    )
-                )
-                continue
-            kept.append(action)
+        for action in actions:
+            if isinstance(action, DeviceAction):
+                device = self.config.device(action.device)
+                reason = should_drop(device, action) if device is not None else None
+                if reason is not None:
+                    self._publish(HubEvent(type="action", action=action.describe(), ok=True, detail=reason))
+                    continue
+                kept.append(action)
+            elif isinstance(action, IfAction):
+                then = self._collapse_delays(self._filter_actions(action.then, should_drop))
+                otherwise = self._collapse_delays(self._filter_actions(action.otherwise, should_drop))
+                if not then and not otherwise:
+                    continue
+                kept.append(action.model_copy(update={"then": then, "otherwise": otherwise}))
+            else:
+                kept.append(action)
         return kept
+
+    @staticmethod
+    def _collapse_delays(actions: List[Action]) -> List[Action]:
+        """A branch (or macro) left with nothing but delays once filtering has
+        run accomplishes nothing -- waiting is only meaningful before
+        something that no longer happens.
+        """
+        if actions and all(isinstance(a, DelayAction) for a in actions):
+            return []
+        return actions
 
     # ------------------------------------------------------------------
     # Button handling
@@ -615,12 +685,30 @@ class SceneEngine:
             await self._run_adjust(action, source, announce=announce, label_suffix=label_suffix)
             return
 
+        if isinstance(action, IfAction):
+            await self._run_if(action, source, depth, announce=announce, label_suffix=label_suffix)
+            return
+
+        if isinstance(action, SetAction):
+            value = await self.read_value(action.value)
+            self.variables[action.name] = value
+            if announce:
+                self._publish(
+                    HubEvent(type="action", action=action.describe() + label_suffix, ok=True, detail=source)
+                )
+            return
+
+        if isinstance(action, WaitForAction):
+            await self._run_wait_for(action, source, announce=announce, label_suffix=label_suffix)
+            return
+
         assert isinstance(action, DeviceAction)
         backend = self._backends.get(action.device)
         if backend is None:
             raise KeyError(f"device '{action.device}' is not running")
 
-        await asyncio.wait_for(backend.send(action.command, action.params), timeout=ACTION_TIMEOUT)
+        params = await self._resolve_params(action.params)
+        await asyncio.wait_for(backend.send(action.command, params), timeout=ACTION_TIMEOUT)
         if announce:
             self._publish(HubEvent(type="action", action=action.describe() + label_suffix, ok=True, detail=source))
         self._update_focus(action.device, backend, action.command)
@@ -678,3 +766,180 @@ class SceneEngine:
                     detail=f"{source} · following {label}",
                 )
             )
+
+    # ------------------------------------------------------------------
+    # Conditions & values
+    # ------------------------------------------------------------------
+
+    async def read_value(self, value: Value, *, fresh: bool = False) -> str:
+        """Resolves any `Value` to a plain string.
+
+        A `literal` always succeeds -- there is nothing to fetch. A `var`
+        raises `BackendError` if `name` was never `set`, the same failure
+        shape a `state` value's unreachable device produces, so a
+        `Condition`'s `on_unreadable` handling covers both without needing
+        to know which kind of value it was given.
+        """
+        if isinstance(value, LiteralValue):
+            return value.value
+        if isinstance(value, VarValue):
+            stored = self.variables.get(value.name)
+            if stored is None:
+                raise backends.BackendError(f"variable '{value.name}' has not been set yet")
+            return stored
+        assert isinstance(value, StateValue)
+        return await self._read_device_state(value.device, value.target, fresh=fresh)
+
+    async def _read_device_state(self, device_id: str, target: str, *, fresh: bool = False) -> str:
+        """The current value of one device's state target, cached briefly.
+
+        `fresh=True` (what `wait_for`'s poll loop passes) skips the cache on
+        the way in but still refills it on the way out -- an ordinary `if`
+        checked right after a `wait_for` resolves should see the same
+        up-to-date answer the wait just confirmed, not force a third read.
+        """
+        key = (device_id, target)
+        now = time.monotonic()
+        if not fresh:
+            cached = self._state_cache.get(key)
+            if cached is not None and now - cached[0] < STATE_READ_TTL:
+                return cached[1]
+
+        backend = self._backends.get(device_id)
+        if backend is None:
+            raise backends.BackendError(f"device '{device_id}' is not running")
+        if not isinstance(backend, backends.Readable):
+            raise backends.BackendError(f"device '{device_id}' has nothing a condition could read")
+
+        value = await backend.read_state(target)
+        self._state_cache[key] = (now, value)
+        return value
+
+    async def evaluate_condition(self, condition: Condition, *, fresh: bool = False) -> bool:
+        """Whether `condition` holds right now.
+
+        `known`/`unknown` answer directly from whether `left` could be read
+        at all -- that *is* the question, so `on_unreadable` (which exists
+        for every other operator, to decide what an unreadable `left` should
+        be treated as) does not apply to them. Every other operator needs
+        both sides readable to mean anything; either one failing falls back
+        to `on_unreadable`, string-compared exactly the same as
+        `right` failing to read at all -- from the caller's side, "the TV is
+        offline" and "nobody has set that variable yet" are the same kind of
+        "cannot tell" and should be treated identically.
+        """
+        try:
+            left = await self.read_value(condition.left, fresh=fresh)
+        except backends.BackendError:
+            if condition.op == "known":
+                return False
+            if condition.op == "unknown":
+                return True
+            return condition.on_unreadable == "run"
+
+        if condition.op == "known":
+            return True
+        if condition.op == "unknown":
+            return False
+
+        try:
+            right = await self.read_value(condition.right, fresh=fresh)
+        except backends.BackendError:
+            return condition.on_unreadable == "run"
+
+        return _compare(condition.op, left, right, on_unreadable=condition.on_unreadable)
+
+    async def _run_if(
+        self, action: IfAction, source: str, depth: int, *, announce: bool = True, label_suffix: str = ""
+    ) -> None:
+        result = await self.evaluate_condition(action.condition)
+        if announce:
+            self._publish(
+                HubEvent(
+                    type="action", action=action.describe() + label_suffix, ok=True,
+                    detail=f"{source}: {'true' if result else 'false'}",
+                )
+            )
+        branch = action.then if result else action.otherwise
+        # Depth, not a fresh macro: `run_actions` re-checks `paused` and
+        # `MAX_ACTION_DEPTH`, which is what lets `if` nest inside `if` up to
+        # the same bound a chain of scene switches shares.
+        await self.run_actions(branch, source, depth=depth + 1, announce=announce, label_suffix=label_suffix)
+
+    async def _run_wait_for(
+        self, action: WaitForAction, source: str, *, announce: bool = True, label_suffix: str = ""
+    ) -> None:
+        """Polls `action.condition` until it holds or `action.timeout` runs out.
+
+        Every poll -- including the first -- reads fresh, bypassing
+        `_read_device_state`'s cache entirely: a cached answer here would be
+        exactly the stale value this is waiting to get past. An unreadable
+        condition resolves through `on_unreadable` the same as anywhere
+        else, which is what lets `run` (the default) mean "do not actually
+        block on a device this cannot reach" -- it reads as satisfied on the
+        very first poll, rather than waiting out the full timeout for
+        equipment that was never going to answer.
+        """
+        deadline = time.monotonic() + action.timeout
+        while True:
+            if await self.evaluate_condition(action.condition, fresh=True):
+                if announce:
+                    self._publish(
+                        HubEvent(type="action", action=action.describe() + label_suffix, ok=True, detail=source)
+                    )
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(action.poll, remaining))
+
+        if action.on_timeout == "stop":
+            raise backends.BackendError(f"timed out waiting for {action.condition.describe()}")
+        if announce:
+            self._publish(
+                HubEvent(
+                    type="action", action=action.describe() + label_suffix, ok=True,
+                    detail=f"{source}: timed out, continuing",
+                )
+            )
+
+    async def _resolve_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not params:
+            return params
+        return {name: await self._resolve_param(raw) for name, raw in params.items()}
+
+    async def _resolve_param(self, raw: Any) -> Any:
+        """Passes an ordinary parameter through untouched; resolves a `Value`
+        written as a plain dict (`{"type": "state", ...}`) to its live
+        value. This is how "restore whatever the input was before this scene
+        changed it" is expressed -- an ordinary `DeviceAction` whose
+        parameter is a `Value` rather than a fixed string -- without typing
+        every backend's own parameter schema against `Value` as well.
+        """
+        if isinstance(raw, dict) and raw.get("type") in ("state", "var", "literal"):
+            value = _VALUE_ADAPTER.validate_python(raw)
+            return await self.read_value(value)
+        return raw
+
+
+def _compare(op: str, left: str, right: str, *, on_unreadable: str) -> bool:
+    """The non-identity/membership half of `Condition`'s operators.
+
+    `gt`/`lt` additionally need both sides to parse as numbers; one that
+    does not is exactly as "cannot tell" as a device that would not answer,
+    so it falls back to `on_unreadable` the same way.
+    """
+    if op == "is":
+        return left == right
+    if op == "is_not":
+        return left != right
+    if op == "contains":
+        return right in left
+    if op == "in":
+        return left in right
+    assert op in ("gt", "lt")
+    try:
+        left_n, right_n = float(left), float(right)
+    except ValueError:
+        return on_unreadable == "run"
+    return left_n > right_n if op == "gt" else left_n < right_n

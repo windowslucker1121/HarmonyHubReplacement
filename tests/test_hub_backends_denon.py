@@ -522,6 +522,105 @@ async def test_the_mute_toggle_asks_the_receiver_over_telnet_too(telnet):
     assert telnet.sent[-1] == "MUOFF"
 
 
+# --------------------------------------------------------------------------
+# Reading state back, for a scene's conditions
+# --------------------------------------------------------------------------
+
+
+async def test_readable_offers_power_source_and_mute_over_http(fake):
+    backend = make()
+    await backend.connect()
+
+    targets = {t.target for t in await backend.readable()}
+
+    assert targets == {"power", "source", "muted"}
+
+
+async def test_readable_adds_surround_only_over_telnet(telnet):
+    backend = over_telnet()
+    await backend.connect()
+
+    targets = {t.target for t in await backend.readable()}
+
+    assert "surround" in targets
+
+
+async def test_read_state_reports_power_source_and_mute(fake):
+    fake.state["Power"] = "ON"
+    fake.state["InputFuncSelect"] = "SAT/CBL"
+    fake.state["Mute"] = "on"
+    backend = make()
+    await backend.connect()
+
+    assert await backend.read_state("power") == "on"
+    assert await backend.read_state("source") == "SAT/CBL"
+    assert await backend.read_state("muted") == "true"
+
+
+async def test_read_state_reports_standby_and_unmuted(fake):
+    fake.state["Power"] = "STANDBY"
+    fake.state["Mute"] = "off"
+    backend = make()
+    await backend.connect()
+
+    assert await backend.read_state("power") == "standby"
+    assert await backend.read_state("muted") == "false"
+
+
+async def test_read_state_of_an_unknown_target_is_rejected(fake):
+    backend = make()
+    await backend.connect()
+
+    with pytest.raises(backends.BackendError, match="no state 'ghost'"):
+        await backend.read_state("ghost")
+
+
+async def test_the_surround_mode_reads_over_telnet(telnet):
+    # "MS" is a query prefix like any other in READABLE, just not bundled
+    # into it -- the fake's state dict works the same way either way.
+    telnet.state["MS"] = "NEURAL:X"
+    backend = over_telnet()
+    await backend.connect()
+
+    assert await backend.read_state("surround") == "NEURAL:X"
+
+
+async def test_the_surround_mode_reads_past_whatever_else_the_receiver_volunteers(telnet):
+    telnet.state["MS"] = "DOLBY DIGITAL"
+    telnet.noise = ["PSDRC OFF", "PSLFE 00", "PSBAS 56"]
+    backend = over_telnet()
+    await backend.connect()
+
+    assert await backend.read_state("surround") == "DOLBY DIGITAL"
+
+
+async def test_the_surround_mode_cannot_be_read_over_http(fake):
+    """Confirmed against a real AVR-X2700H: the command endpoint answers
+    `200` with an empty body for `MS?`, the same as it does here -- not an
+    HTTP error, just nothing worth reading. `readable()` already leaves
+    `surround` off the list for HTTP, but `read_state` has to fail honestly
+    too, for a saved condition built while still on telnet that outlives a
+    later switch to HTTP.
+    """
+    backend = make()
+    await backend.connect()
+
+    with pytest.raises(backends.BackendError, match="could not read"):
+        await backend.read_state("surround")
+
+    assert "MS?" in fake.sent
+
+
+async def test_the_surround_mode_is_unreadable_when_nothing_answers(telnet):
+    # No "MS" key in telnet.state -- the receiver stays silent, the same as
+    # a query it does not recognise.
+    backend = over_telnet()
+    await backend.connect()
+
+    with pytest.raises(backends.BackendError, match="could not read"):
+        await backend.read_state("surround")
+
+
 async def test_a_receiver_that_will_not_say_points_at_the_discrete_commands(fake):
     # Tracking the state here instead would go wrong the first time somebody
     # picked up the receiver's own remote, so the honest answer is to name the

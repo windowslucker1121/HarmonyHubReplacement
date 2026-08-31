@@ -165,6 +165,11 @@ class BackendInfo(BaseModel):
     #: transmitter to check it before saving -- false for a receive-only
     #: install, where there is nothing to play it back through.
     learn_verifiable: bool = False
+    #: Whether `/api/devices/{id}/readable` and `/api/devices/{id}/state/...`
+    #: exist for this backend -- for the same reason `pairable` does: the app
+    #: should not keep its own list of which backend names can answer a
+    #: scene condition's "what is this device doing right now".
+    readable: bool = False
 
 
 class EntityInfo(BaseModel):
@@ -183,6 +188,22 @@ class CommandInfo(BaseModel):
     description: str = ""
     params: Dict[str, Any] = {}
     repeatable: bool = False
+
+
+class StateTargetInfo(BaseModel):
+    """One thing a device can report the state of, for the condition editor."""
+
+    target: str
+    label: str
+    values: List[str] = []
+    description: str = ""
+
+
+class VariableInfo(BaseModel):
+    """One remembered value, for the live view and the `var` value editor."""
+
+    name: str
+    value: str
 
 
 class PairFinishRequest(BaseModel):
@@ -529,6 +550,7 @@ def create_app(
                     learn_label=cls.learn_label if learnable else "",
                     learn_hint=cls.learn_hint if learnable else "",
                     learn_verifiable=cls.learn_verifiable if learnable else False,
+                    readable=issubclass(cls, backends.Readable),
                 )
             )
         return infos
@@ -1052,6 +1074,12 @@ def create_app(
             raise HTTPException(400, f"device '{device_id}' cannot learn commands")
         return backend
 
+    def _readable(device_id: str) -> backends.Readable:
+        backend = _running(device_id)
+        if not isinstance(backend, backends.Readable):
+            raise HTTPException(400, f"device '{device_id}' has nothing a condition could read")
+        return backend
+
     @app.get("/api/devices/{device_id}/commands", response_model=List[CommandInfo])
     async def get_device_commands(device_id: str) -> List[CommandInfo]:
         backend = _running(device_id)
@@ -1097,6 +1125,51 @@ def create_app(
             EntityInfo(**entry)
             for entry in found
             if not controllable_only or entry.get("controllable", True)
+        ]
+
+    @app.get("/api/devices/{device_id}/readable", response_model=List[StateTargetInfo])
+    async def get_device_readable(device_id: str) -> List[StateTargetInfo]:
+        """What a device can report the state of, for the condition editor's
+        target picker. Only `Readable` backends have anything to answer here
+        -- an IR device or a webhook has no return channel, so it is left off
+        the list entirely rather than offered and then failing every read.
+        """
+        backend = _readable(device_id)
+        return [
+            StateTargetInfo(target=t.target, label=t.label, values=list(t.values), description=t.description)
+            for t in await backend.readable()
+        ]
+
+    @app.get("/api/devices/{device_id}/state/{target}")
+    async def get_device_state(device_id: str, target: str) -> Dict[str, str]:
+        """The current value of one state target, read fresh -- not the
+        engine's cache a running condition uses -- so the editor's "currently:
+        off" readout reflects what pressing the button right now would see.
+        """
+        backend = _readable(device_id)
+        try:
+            value = await backend.read_state(target)
+        except backends.BackendError as err:
+            # The device is running but cannot answer right now, which is a
+            # 409 rather than a 500 -- the same distinction `entities` draws.
+            raise HTTPException(409, str(err))
+        return {"value": value}
+
+    @app.get("/api/variables", response_model=List[VariableInfo])
+    async def get_variables() -> List[VariableInfo]:
+        """Every `set` value the running engine currently remembers.
+
+        Lives on the engine, like `focus` and `active_scene` -- reset on
+        every (re)start rather than persisted, since a value saved from a
+        device's state three days ago is worse than no value at all. Empty
+        (rather than a 409) while the hub is stopped, the same as `focus`
+        answers `None` in `/api/status` then instead of failing the request.
+        """
+        if runtime.service is None:
+            return []
+        return [
+            VariableInfo(name=name, value=value)
+            for name, value in sorted(runtime.service.engine.variables.items())
         ]
 
     @app.get("/api/devices/{device_id}/suggested_bindings")

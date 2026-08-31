@@ -45,7 +45,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from . import Backend, BackendError, Command, Health, register
+from . import Backend, BackendError, Command, Health, Readable, StateTarget, register
 from . import _ssdp
 
 logger = logging.getLogger("HUB.denon")
@@ -181,6 +181,13 @@ READABLE: Dict[str, Tuple[str, str]] = {
     "source": ("SI?", "InputFuncSelect"),
 }
 
+#: The surround mode is deliberately not in `READABLE` above: it has no HTTP
+#: equivalent at all, confirmed against a real AVR-X2700H -- the Lite status
+#: document `_read_status_document` reads does not carry it, the full
+#: document 403s, and every `AppCommand.xml` variant answers an empty `<rx/>`.
+#: `MS?` over telnet is the only way to read it back; see `_read_surround`.
+SURROUND_QUERY = "MS?"
+
 #: `<Power><value>ON</value></Power>` and its dozen siblings, which is the whole
 #: shape of the status document. A regex rather than an XML parser because one
 #: flat level of name/value pairs is all that is ever wanted from it.
@@ -256,7 +263,7 @@ def build_client(base_url: str, timeout: float) -> httpx.AsyncClient:
 
 
 @register
-class DenonBackend(Backend):
+class DenonBackend(Backend, Readable):
     """One Denon or Marantz AV receiver on the local network."""
 
     name = "denon"
@@ -524,6 +531,28 @@ class DenonBackend(Backend):
             raise BackendError(f"{self.device_id}: could not read the receiver ({err})") from err
         return response.text
 
+    async def _read_surround(self) -> str:
+        """The receiver's resolved surround mode, telnet only -- see `SURROUND_QUERY`.
+
+        This reports what the receiver actually settled on for the current
+        signal (`NEURAL:X`, `DOLBY DIGITAL`, `DTS SURROUND`, `STEREO`, ...),
+        not necessarily the category last selected (`MSMOVIE`, `MSMUSIC`,
+        ...): confirmed against a real unit that sending a category command
+        with nothing playing changes nothing this reports, since there is no
+        signal for a category to apply to. A condition comparing this against
+        a fixed category is only meaningful while audio is actually playing.
+
+        Sending `MS?` over HTTP is harmless -- confirmed empty body, no side
+        effect -- but never answers, so `_transmit` is used directly rather
+        than gating on `self.transport` first: an empty reply already means
+        exactly what it should here, the same way an empty answer to any
+        other query would.
+        """
+        reply = await self._transmit(SURROUND_QUERY, query=SURROUND_QUERY)
+        if not reply:
+            raise BackendError(f"{self.device_id}: could not read the surround mode")
+        return reply.upper()
+
     # -- commands ---------------------------------------------------------
 
     async def commands(self) -> List[Command]:
@@ -673,6 +702,52 @@ class DenonBackend(Backend):
 
     def suggested_bindings(self) -> Dict[str, str]:
         return dict(SUGGESTED_BINDINGS)
+
+    # -- state --------------------------------------------------------------
+
+    async def readable(self) -> List[StateTarget]:
+        """Power, source and mute always -- both transports can answer them.
+
+        Surround is offered only on telnet: advertising it on HTTP would
+        mean every read fails, which is honest (`read_state` still raises
+        cleanly) but a worse experience than not offering it in the first
+        place -- the same reasoning `discover_field`/`pairable` already
+        apply per-backend rather than showing a control that can never work.
+        """
+        targets = [
+            StateTarget(target="power", label="Power", values=("on", "standby")),
+            StateTarget(target="source", label="Source", values=tuple(INPUT_LABELS)),
+            StateTarget(target="muted", label="Muted", values=("true", "false")),
+        ]
+        if self.transport == "telnet":
+            targets.append(
+                StateTarget(
+                    target="surround",
+                    label="Surround mode",
+                    description="The resolved processing mode (e.g. DOLBY DIGITAL, NEURAL:X), "
+                    "not necessarily the category last selected -- meaningful only while "
+                    "something is actually playing. Telnet only.",
+                )
+            )
+        return targets
+
+    async def read_state(self, target: str) -> str:
+        """Asks the receiver directly -- unlike `lgtv`/`androidtv` there is no
+        live-updating cache here, only whatever `health()`'s own probe last
+        saw, which can be stale enough to answer wrongly right after a scene
+        just changed it. `BackendError` (unreachable, or nothing answered)
+        propagates as-is, for the condition's `on_unreadable` handling.
+        """
+        if target == "surround":
+            return await self._read_surround()
+        if target not in ("power", "source", "muted"):
+            raise BackendError(f"device '{self.device_id}' has no state '{target}'")
+        state = await self._read_state()
+        if target == "power":
+            return "on" if state.get("power") == "ON" else "standby"
+        if target == "muted":
+            return "true" if state.get("mute") == "ON" else "false"
+        return state.get("source", "")
 
 
 def _why(err: BaseException) -> str:

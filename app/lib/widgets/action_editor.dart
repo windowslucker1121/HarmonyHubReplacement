@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../api/client.dart';
 import '../api/config.dart';
 import '../api/models.dart';
+import 'value_editor.dart';
 
 class ActionListEditor extends StatelessWidget {
   const ActionListEditor({
@@ -167,6 +168,24 @@ class _ActionDialogState extends State<_ActionDialog> {
 
   final Map<String, TextEditingController> _paramControllers = {};
 
+  /// Condition for an `if` or `wait_for` action. Seeded (once the type is
+  /// actually chosen) rather than left null indefinitely, since every field
+  /// below assumes it exists the moment `_type` says it should.
+  HubCondition? _condition;
+
+  /// An `if` action's two branches, edited on a pushed page -- see
+  /// `_IfBranchesPage` -- rather than inline, since two nested reorderable
+  /// lists do not fit inside this dialog's fixed width.
+  List<HubAction> _then = [];
+  List<HubAction> _otherwise = [];
+
+  late TextEditingController _varName;
+  HubValue? _setValue;
+
+  late TextEditingController _timeout;
+  late TextEditingController _poll;
+  late String _onTimeout;
+
   @override
   void initState() {
     super.initState();
@@ -179,14 +198,54 @@ class _ActionDialogState extends State<_ActionDialog> {
     _direction = initial?.direction ?? 'up';
     _params = Map<String, dynamic>.from(initial?.params ?? {});
     _paramsCommand = initial?.type == 'device' ? initial?.command : null;
+
+    // Copied, never the original action's own objects: this dialog is a
+    // draft, and mutating `condition`/`then`/`otherwise` in place (which
+    // `ConditionEditor` and `ActionListEditor` both do) must not reach the
+    // scene's real config until "Save" is actually pressed.
+    _condition = (initial?.type == 'if' || initial?.type == 'wait_for') ? initial?.condition?.copy() : null;
+    _then = initial?.type == 'if' ? initial!.then.map((a) => a.copy()).toList() : <HubAction>[];
+    _otherwise = initial?.type == 'if' ? initial!.otherwise.map((a) => a.copy()).toList() : <HubAction>[];
+
+    _varName = TextEditingController(text: initial?.type == 'set' ? (initial?.varName ?? '') : '');
+    _setValue = initial?.type == 'set' ? initial?.value?.copy() : null;
+
+    _timeout = TextEditingController(
+      text: ((initial?.type == 'wait_for' ? initial?.timeout : null) ?? 10.0).toString(),
+    );
+    _poll = TextEditingController(
+      text: ((initial?.type == 'wait_for' ? initial?.poll : null) ?? 0.5).toString(),
+    );
+    _onTimeout = (initial?.type == 'wait_for' ? initial?.onTimeout : null) ?? 'continue';
+
     if (_type == 'device' && _deviceId != null) _loadCommands(_deviceId!);
   }
 
   @override
   void dispose() {
     _seconds.dispose();
+    _varName.dispose();
+    _timeout.dispose();
+    _poll.dispose();
     _disposeParamControllers();
     super.dispose();
+  }
+
+  /// Switches the action type, seeding whatever the newly-chosen type needs
+  /// that a blank draft would not otherwise have -- a condition for `if` and
+  /// `wait_for`, a value for `set`. Left in place if it already exists, so
+  /// switching away and back does not lose what was entered.
+  void _onTypeChanged(String type) {
+    setState(() {
+      _type = type;
+      if ((type == 'if' || type == 'wait_for')) {
+        _condition ??= HubCondition(left: HubValue.literal(''));
+      }
+      if (type == 'set') {
+        _setValue ??= HubValue.literal('');
+      }
+    });
+    if (type == 'device' && _deviceId != null) _loadCommands(_deviceId!);
   }
 
   CommandInfo? get _selectedCommand {
@@ -267,6 +326,11 @@ class _ActionDialogState extends State<_ActionDialog> {
         'device' => _deviceId != null && _command != null && _requiredParamsFilled,
         'scene' => true, // a null scene is the Off action
         'adjust' => true, // direction always has a value
+        'if' => conditionIsValid(_condition),
+        'set' => _varName.text.trim().isNotEmpty && valueIsValid(_setValue),
+        'wait_for' => conditionIsValid(_condition) &&
+            double.tryParse(_timeout.text) != null &&
+            double.tryParse(_poll.text) != null,
         _ => double.tryParse(_seconds.text) != null,
       };
 
@@ -286,6 +350,14 @@ class _ActionDialogState extends State<_ActionDialog> {
             device: widget.initial?.type == 'adjust' ? widget.initial?.device : null,
             target: widget.initial?.type == 'adjust' ? widget.initial?.target : null,
           ),
+        'if' => HubAction.ifAction(_condition!, then: _then, otherwise: _otherwise),
+        'set' => HubAction.set(_varName.text.trim(), _setValue!),
+        'wait_for' => HubAction.waitFor(
+            _condition!,
+            timeout: double.parse(_timeout.text),
+            poll: double.parse(_poll.text),
+            onTimeout: _onTimeout,
+          ),
         _ => HubAction.delay(double.parse(_seconds.text)),
       };
 
@@ -295,39 +367,59 @@ class _ActionDialogState extends State<_ActionDialog> {
       title: Text(widget.initial == null ? 'Add action' : 'Edit action'),
       content: SizedBox(
         width: 420,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'device', label: Text('Device'), icon: Icon(Icons.tv)),
-                ButtonSegment(value: 'scene', label: Text('Scene'), icon: Icon(Icons.movie_filter_outlined)),
-                ButtonSegment(value: 'adjust', label: Text('Adjust'), icon: Icon(Icons.tune)),
-                ButtonSegment(value: 'delay', label: Text('Wait'), icon: Icon(Icons.timer_outlined)),
-              ],
-              selected: {_type},
-              onSelectionChanged: (values) {
-                setState(() => _type = values.first);
-                if (_type == 'device' && _deviceId != null) _loadCommands(_deviceId!);
-              },
-            ),
-            const SizedBox(height: 20),
-            if (_type == 'device') ..._deviceFields(),
-            if (_type == 'scene') _sceneField(),
-            if (_type == 'adjust') ..._adjustFields(context),
-            if (_type == 'delay')
-              TextField(
-                controller: _seconds,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Seconds',
-                  helperText: 'Equipment often ignores a command sent right after power-on.',
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: (_) => setState(() {}),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Two rows rather than one seven-way row: `SegmentedButton`
+              // sizes to its natural width and does not wrap, so seven
+              // segments together would overflow this dialog's fixed width.
+              // Each row shows its own selection only when `_type` is one of
+              // its own segments (`emptySelectionAllowed`) -- `SegmentedButton`
+              // asserts if asked to select a value that is not among its own.
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'device', label: Text('Device'), icon: Icon(Icons.tv)),
+                  ButtonSegment(value: 'scene', label: Text('Scene'), icon: Icon(Icons.movie_filter_outlined)),
+                  ButtonSegment(value: 'adjust', label: Text('Adjust'), icon: Icon(Icons.tune)),
+                  ButtonSegment(value: 'delay', label: Text('Wait'), icon: Icon(Icons.timer_outlined)),
+                ],
+                emptySelectionAllowed: true,
+                selected: {'device', 'scene', 'adjust', 'delay'}.contains(_type) ? {_type} : <String>{},
+                onSelectionChanged: (values) => _onTypeChanged(values.first),
               ),
-          ],
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'if', label: Text('If'), icon: Icon(Icons.call_split)),
+                  ButtonSegment(value: 'set', label: Text('Remember'), icon: Icon(Icons.bookmark_add_outlined)),
+                  ButtonSegment(value: 'wait_for', label: Text('Wait for'), icon: Icon(Icons.hourglass_top)),
+                ],
+                emptySelectionAllowed: true,
+                selected: {'if', 'set', 'wait_for'}.contains(_type) ? {_type} : <String>{},
+                onSelectionChanged: (values) => _onTypeChanged(values.first),
+              ),
+              const SizedBox(height: 20),
+              if (_type == 'device') ..._deviceFields(),
+              if (_type == 'scene') _sceneField(),
+              if (_type == 'adjust') ..._adjustFields(context),
+              if (_type == 'delay')
+                TextField(
+                  controller: _seconds,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Seconds',
+                    helperText: 'Equipment often ignores a command sent right after power-on.',
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              if (_type == 'if') ..._ifFields(context),
+              if (_type == 'set') ..._setFields(),
+              if (_type == 'wait_for') ..._waitForFields(),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -489,4 +581,203 @@ class _ActionDialogState extends State<_ActionDialog> {
           onSelectionChanged: (values) => setState(() => _direction = values.first),
         ),
       ];
+
+  /// The condition, plus two rows that push a full page for editing the
+  /// branches themselves -- two nested reorderable action lists do not fit
+  /// inside this dialog's fixed width, the same reason the binding editor's
+  /// per-button macros already live on their own page rather than in a
+  /// dialog.
+  List<Widget> _ifFields(BuildContext context) => [
+        ConditionEditor(
+          config: widget.config,
+          api: widget.api,
+          condition: _condition!,
+          onChanged: (condition) => setState(() => _condition = condition),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          margin: EdgeInsets.zero,
+          child: Column(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.check_circle_outline),
+                title: const Text('Then'),
+                subtitle: Text(_then.isEmpty ? 'Nothing yet' : '${_then.length} step(s)'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _editBranches(context),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.highlight_off),
+                title: const Text('Otherwise'),
+                subtitle: Text(_otherwise.isEmpty ? 'Nothing yet' : '${_otherwise.length} step(s)'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _editBranches(context),
+              ),
+            ],
+          ),
+        ),
+      ];
+
+  Future<void> _editBranches(BuildContext context) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _IfBranchesPage(
+          config: widget.config,
+          api: widget.api,
+          then: _then,
+          otherwise: _otherwise,
+          onThenChanged: (actions) => setState(() => _then = actions),
+          onOtherwiseChanged: (actions) => setState(() => _otherwise = actions),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _setFields() => [
+        TextField(
+          controller: _varName,
+          decoration: const InputDecoration(
+            labelText: 'Variable name',
+            helperText: 'Lowercase letters, numbers and underscores -- how a "Variable" value '
+                'elsewhere finds this again.',
+            border: OutlineInputBorder(),
+          ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 16),
+        ValueEditor(
+          config: widget.config,
+          api: widget.api,
+          value: _setValue!,
+          label: 'Value to remember',
+          onChanged: (value) => setState(() => _setValue = value),
+        ),
+      ];
+
+  List<Widget> _waitForFields() => [
+        ConditionEditor(
+          config: widget.config,
+          api: widget.api,
+          condition: _condition!,
+          onChanged: (condition) => setState(() => _condition = condition),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _timeout,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'Time out after (s)', border: OutlineInputBorder()),
+                onChanged: (_) => setState(() {}),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: _poll,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'Check every (s)', border: OutlineInputBorder()),
+                onChanged: (_) => setState(() {}),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<String>(
+          isExpanded: true,
+          initialValue: _onTimeout,
+          decoration: const InputDecoration(labelText: 'If it times out', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'continue', child: Text('Continue with the rest of the macro')),
+            DropdownMenuItem(value: 'stop', child: Text('Continue, but log it as a failure')),
+          ],
+          onChanged: (value) => setState(() => _onTimeout = value ?? 'continue'),
+        ),
+      ];
+}
+
+/// A full page for an `if` action's `then` and `otherwise` branches -- two
+/// [ActionListEditor]s, the same "one card per macro" layout the scene
+/// editor already uses for `on_start`/`on_stop`. Pushed from the action
+/// dialog rather than shown inline: two nested `ReorderableListView`s do not
+/// fit inside a fixed-width dialog, and this lets each branch be reordered
+/// or have its own nested `if` added exactly the way a top-level macro can.
+class _IfBranchesPage extends StatefulWidget {
+  const _IfBranchesPage({
+    required this.config,
+    required this.api,
+    required this.then,
+    required this.otherwise,
+    required this.onThenChanged,
+    required this.onOtherwiseChanged,
+  });
+
+  final HubConfig config;
+  final HubApi api;
+  final List<HubAction> then;
+  final List<HubAction> otherwise;
+  final ValueChanged<List<HubAction>> onThenChanged;
+  final ValueChanged<List<HubAction>> onOtherwiseChanged;
+
+  @override
+  State<_IfBranchesPage> createState() => _IfBranchesPageState();
+}
+
+class _IfBranchesPageState extends State<_IfBranchesPage> {
+  late List<HubAction> _then;
+  late List<HubAction> _otherwise;
+
+  @override
+  void initState() {
+    super.initState();
+    _then = widget.then;
+    _otherwise = widget.otherwise;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('If / Otherwise')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: ActionListEditor(
+                title: 'Then',
+                actions: _then,
+                config: widget.config,
+                api: widget.api,
+                emptyHint: 'Nothing yet -- runs no actions when the condition holds.',
+                onChanged: (actions) {
+                  setState(() => _then = actions);
+                  widget.onThenChanged(actions);
+                },
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: ActionListEditor(
+                title: 'Otherwise',
+                actions: _otherwise,
+                config: widget.config,
+                api: widget.api,
+                emptyHint: 'Nothing yet -- runs no actions when the condition does not hold.',
+                onChanged: (actions) {
+                  setState(() => _otherwise = actions);
+                  widget.onOtherwiseChanged(actions);
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

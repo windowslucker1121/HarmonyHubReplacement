@@ -63,6 +63,25 @@ class Health:
 
 
 @dataclass(frozen=True)
+class StateTarget:
+    """One thing a device can report the state of, for a condition to read.
+
+    Mirrors `Command`: `target` is what a condition's config actually stores
+    (backend-private, the same way a command name or `FocusTarget.target`
+    is), `label` and `values` are what the editor shows around it. `values`
+    lists the states this target is known to take -- `["on", "off"]" for a
+    power state -- which is what lets the condition editor offer a dropdown
+    instead of a free-text field; empty means the value space is open (a
+    volume level, an input name) and free text is the only option anyway.
+    """
+
+    target: str
+    label: str
+    values: tuple = ()
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class FocusTarget:
     """What a command acted on, so a later relative command can find it again.
 
@@ -302,6 +321,37 @@ class Learnable(ABC):
         """Removes a previously learned command."""
 
 
+class Readable(ABC):
+    """Mixin for a backend that can report a device's current state back.
+
+    This is what a scene's `if` and `wait_for` actions read from: "is the TV
+    already on", "what input is it showing". Distinct from `commands()` --
+    which is one-directional, a verb the engine can send -- because a
+    condition needs a noun to compare against, not something to do.
+
+    A backend that never implements this (infrared, an HTTP webhook, a
+    fire-and-forget shell command) genuinely has nothing to answer here --
+    there is no return channel -- so it is left off entirely rather than
+    given a `read_state` that always raises. The engine and the editor both
+    check `isinstance(backend, Readable)` before offering conditions on a
+    device, the same way `Pairable` and `Learnable` are checked today.
+    """
+
+    @abstractmethod
+    async def readable(self) -> List["StateTarget"]:
+        """Everything this device can report the state of. Drives the condition editor."""
+
+    @abstractmethod
+    async def read_state(self, target: str) -> str:
+        """The current value of `target`, as a plain string for a condition to compare.
+
+        Raise `BackendError` if the value cannot be read right now (the
+        device is unreachable, `target` does not exist) -- the engine turns
+        that into the condition's own `on_unreadable` handling rather than
+        letting it abort the macro.
+        """
+
+
 # --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
@@ -380,6 +430,8 @@ __all__ = [
     "Health",
     "Learnable",
     "Pairable",
+    "Readable",
+    "StateTarget",
     "available",
     "create",
     "discover",

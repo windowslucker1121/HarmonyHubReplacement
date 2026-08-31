@@ -314,9 +314,12 @@ timing for this button" section, the second only shown once the first is
 above `1×`.
 
 An **action** is one of `device` (send a command), `scene` (switch or stop),
-or `delay`. Scene switching being an ordinary action is what lets the
-remote's activity buttons work through normal bindings instead of a special
-case in the engine.
+`delay`, `adjust` (step whatever the SmartHome +/- keys are focused on),
+`if` (branch on a condition), `set` (remember a value) or `wait_for` (poll a
+condition instead of guessing with a fixed delay) -- see "Conditional
+actions, values, and variables" below for the last three. Scene switching
+being an ordinary action is what lets the remote's activity buttons work
+through normal bindings instead of a special case in the engine.
 
 ### Backends
 
@@ -523,6 +526,19 @@ Things worth knowing before changing it:
 * **It never takes the focus.** `focus_for()` is left at the default, so
   touching the receiver does not swing the SmartHome +/- keys onto it. Volume
   has keys of its own.
+* **Reading state back is split across two paths, deliberately.** Power,
+  source and mute go through `READABLE`/`_read_state`, which both transports
+  answer -- HTTP from the Lite status document, telnet from three queries.
+  Surround (`readable()`'s fourth target, telnet only) does not: confirmed
+  against a real AVR-X2700H that the Lite document does not carry it, the
+  full document 403s, and every `AppCommand.xml` variant answers empty, so
+  `_read_surround` asks `MS?` directly rather than joining `READABLE` and
+  silently going blank on HTTP. What it reports is the receiver's *resolved*
+  mode for the current signal (`NEURAL:X`, `DOLBY DIGITAL`, ...), not the
+  category last selected (`MSMOVIE`, `MSMUSIC`, ...) -- confirmed that
+  sending a category command with nothing playing changes nothing this
+  reports, so a condition comparing it against a fixed category only means
+  something while audio is actually flowing.
 * **It overlaps the Android TV backend on volume and the arrows, on purpose.**
   The receiver is the thing that actually changes the volume in a room that has
   one, and its setup menu needs the same arrows a television's does.
@@ -742,6 +758,109 @@ exist for.
   `adjust` map (button key to `"up"`/`"down"`) alongside the usual
   `bindings` map, which is what lets the remote mapper offer "follow the
   last device touched" as a pick for the +/- keys.
+
+### Conditional actions, values, and variables
+
+A scene's macros were, until now, an unconditional list: every action ran,
+every time. That is wrong for equipment whose own state matters -- "turn the
+TV on, wait, then pick the input" should not power-cycle a TV that is
+already on. Four pieces close that gap, all built on one new backend
+capability.
+
+* **`Readable` is a mixin, alongside `Pairable` and `Learnable`.** A backend
+  that implements it offers `readable()` (what it can report the state of --
+  `StateTarget(target, label, values, description)`, mirroring `Command`) and
+  `read_state(target)` (the current value, as a plain string). Implemented by
+  `androidtv` (power, app -- read from the client's own cached state, no
+  round trip), `lgtv` (power, app, volume, muted -- same, off `tv_state`),
+  `denon` (power, source, muted -- a real query, since there is no live
+  cache), `homeassistant` (one target per *exposed* entity, its `state`
+  string) and `virtual` (entirely config-driven: `state` seeds initial
+  values, `state_effects` maps a command to what it changes, `unreadable`
+  names targets that always fail, for testing `on_unreadable` without real
+  equipment that is actually offline). `ir`, `http` and `shell` are
+  one-directional by nature and do not implement it -- a backend either has a
+  return channel or it does not, so this is a hard `isinstance` check
+  throughout, the same as `Pairable`/`Learnable`. `GET
+  /api/devices/{id}/readable` and `GET /api/devices/{id}/state/{target}`
+  expose it (a 400 if the backend is not `Readable`, a 409 if it is but the
+  read failed right now), and `BackendInfo.readable` on `GET /api/backends`
+  is what lets the app's condition editor know which devices to offer
+  without hard-coding backend names, same as `pairable`.
+* **`Value` is one type with three shapes**, used everywhere a scene needs to
+  refer to a piece of data: `StateValue` (a device's live state -- `device` +
+  `target`), `VarValue` (something a `set` action stored earlier, by name),
+  `LiteralValue` (a value fixed in configuration). A `Condition` compares two
+  `Value`s (`left`/`op`/`right`); `op` is `is` / `is_not` / `contains` / `in`
+  / `gt` / `lt` (the last two try to parse both sides as numbers) or `known`
+  / `unknown` (whether `left` could be read at all, ignoring `right` and
+  `on_unreadable` -- that *is* the question for those two). `on_unreadable`
+  (`"run"`, the default, or `"skip"`) decides what an unreadable `left` (or
+  `right`) is treated as for every other operator: `"run"` matches the
+  engine's behaviour before any of this existed -- a network hiccup never
+  silently stops a macro -- `"skip"` is for the opposite case, where acting
+  on a guess is worse than doing nothing.
+* **Three new actions.** `IfAction` (`then`/`otherwise`, either side an
+  ordinary action list -- nesting one `if` inside another's branch is just
+  how "check several things in order" gets expressed) is the general form a
+  single gated action reduces to. `SetAction` (`name` + `value`) remembers a
+  value under a name for a `VarValue` to recall later -- in the *same* macro
+  or a different scene's, deliberately: "the input the TV was on before this
+  scene changed it" is exactly as useful from a different scene's stop macro
+  as from this one's own. `WaitForAction` (`condition`, `timeout`, `poll`,
+  `on_timeout`) polls instead of guessing with a fixed `DelayAction` --
+  `on_timeout: "stop"` logs a timeout as a failure rather than continuing
+  quietly, but (like every action here) never actually cancels the rest of
+  the macro; nothing in `run_actions` lets one action's failure cancel its
+  siblings, on principle.
+* **A restore is not a new action.** A `DeviceAction`'s `params` stays
+  untyped (`Dict[str, Any]`); a parameter written as a plain
+  `{"type": "state", ...}` dict is recognised and resolved at the moment the
+  action actually runs (`SceneEngine._resolve_param`), so "set the input back
+  to whatever was `set` earlier" is an ordinary `DeviceAction` whose one
+  parameter happens to be a `Value` instead of a fixed string.
+* **`SceneEngine.variables`** is the store: `Dict[str, str]`, hub-lifetime,
+  not persisted -- cleared by `stop()`, kept across `reload()` since saving a
+  config edit is not a restart, exactly the same lifetime `focus` already
+  has. `GET /api/variables` reports it. Reading a name nothing has `set` yet
+  fails the same way an unreadable device does, so a condition's
+  `on_unreadable` handling covers both without caring which kind of value it
+  was given.
+* **Reads are cached for one second** (`SceneEngine._read_device_state`,
+  `STATE_READ_TTL`), so a macro that checks the same device's state twice
+  costs one backend round trip, not two. `wait_for`'s poll loop bypasses the
+  cache entirely on every iteration -- a cached answer there would be exactly
+  the stale value it exists to poll past -- but still refills it, so an
+  ordinary `if` checked right after a `wait_for` resolves sees the same
+  answer the wait just confirmed rather than forcing a third read.
+* **Everything that used to assume a flat action list now recurses.**
+  `Scene.actions()` walks into an `if`'s `then`/`otherwise` (sharing its
+  parent's location label rather than growing one per nesting level);
+  `HubConfig._check_references` validates a device named inside a condition,
+  a `set`'s value, or a `state`-shaped `params` entry, the same as it always
+  validated a `DeviceAction.device`; `SceneEngine._start_actions` /
+  `_stop_actions` filter power commands inside `if` branches exactly as they
+  filter the top level, and drop an `if` outright once both of its branches
+  have been filtered to nothing -- no reason to evaluate a condition whose
+  answer changes nothing either way. `MAX_ACTION_DEPTH` is now shared between
+  scene-switch nesting and `if` nesting rather than each getting its own
+  bound; five levels of either is already pathological.
+* **Reading state does not make a scene depend on that device.** Checking
+  whether the AVR is on while a scene macro only otherwise touches the TV
+  must not make `required_devices()` start protecting the AVR from power-off
+  during an unrelated scene switch -- a condition is a read, not a claim of
+  need, and `Scene.required_devices()` only ever looks at `DeviceAction`/
+  `AdjustAction.device`, never at what a condition or a `set` happened to
+  read from.
+* **The app's editor** (`ValueEditor`/`ConditionEditor` in
+  `app/lib/widgets/value_editor.dart`) is one widget for all three `Value`
+  kinds -- a segmented Fixed/Device/Variable choice, with a live "Currently:
+  ..." readout next to whichever device state is picked, refreshed on
+  demand. `if`'s `then`/`otherwise` are edited on a full page pushed from the
+  action dialog (`_IfBranchesPage`, two ordinary `ActionListEditor`s) rather
+  than inline -- two nested `ReorderableListView`s do not fit inside a
+  fixed-width dialog, the same reason the binding editor's own per-button
+  macros already live on their own page.
 
 ### Event sources
 
@@ -1048,8 +1167,14 @@ not by the unit tests alone.
 
 ## Open items
 
-1. **Power-state diffing** across scene switches, using the stored power
-   policy: the last piece of Harmony-grade activity behaviour.
+1. ~~**Power-state diffing** across scene switches~~ -- largely subsumed by
+   `Readable`/`Condition` (see "Conditional actions, values, and variables"
+   above): a scene can now check a device's actual power state before
+   deciding whether to touch it, rather than the engine guessing from policy
+   alone. What is still open is *using* it -- none of the shipped scenes
+   guard their own power commands with a condition yet, and the suggested
+   bindings/macros generated for a new scene do not reach for `if` on their
+   own.
 2. **Mobile targets.** The app is web-only today. Android needs `flutter
    create --platforms=android .` in `app/`; iOS additionally needs a cloud
    macOS runner to build from Windows.

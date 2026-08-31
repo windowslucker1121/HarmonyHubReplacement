@@ -61,7 +61,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from . import Backend, BackendError, Command, Health, Pairable, register
+from . import Backend, BackendError, Command, Health, Pairable, Readable, StateTarget, register
 from . import _ssdp
 
 logger = logging.getLogger("HUB.lgtv")
@@ -374,7 +374,7 @@ COMMANDS: List[Command] = _build_commands()
 
 
 @register
-class LgTvBackend(Backend, Pairable):
+class LgTvBackend(Backend, Pairable, Readable):
     """One LG webOS TV -- OLED, QNED, or otherwise -- over SSAP."""
 
     name = "lgtv"
@@ -864,6 +864,36 @@ class LgTvBackend(Backend, Pairable):
         if state.volume is not None:
             parts.append(f"vol {state.volume}")
         return Health(ok=True, detail=" · ".join(parts))
+
+    # -- state ----------------------------------------------------------------
+
+    async def readable(self) -> List[StateTarget]:
+        return [
+            StateTarget(target="power", label="Power", values=("on", "standby")),
+            StateTarget(target="app", label="Current app"),
+            StateTarget(target="volume", label="Volume"),
+            StateTarget(target="muted", label="Muted", values=("true", "false")),
+        ]
+
+    async def read_state(self, target: str) -> str:
+        """Answered from the client's own cached state -- no round trip to the
+        TV, the same reason `health()` reads it this way. A TV that is off or
+        unreachable still answers `power` as `standby`; every other target
+        needs a live connection to mean anything.
+        """
+        if target == "power":
+            connected = self._client is not None and self._client.is_connected()
+            return "on" if connected and self._client.tv_state.is_on else "standby"
+        if self._client is None or not self._client.is_connected():
+            raise BackendError(f"device '{self.device_id}' is {self._state}: {self._detail}")
+        state = self._client.tv_state
+        if target == "app":
+            return str(state.current_app_id or "")
+        if target == "volume":
+            return "" if state.volume is None else str(state.volume)
+        if target == "muted":
+            return "" if state.muted is None else ("true" if state.muted else "false")
+        raise BackendError(f"device '{self.device_id}' has no state '{target}'")
 
     # -- pairing --------------------------------------------------------------
 

@@ -356,6 +356,7 @@ class FakeApi extends HubApi {
         BackendInfo(
           name: 'virtual', label: 'Virtual device', description: 'Records commands.',
           configSchema: const {'type': 'object', 'properties': {}},
+          readable: true,
         ),
         BackendInfo(
           name: 'androidtv', label: 'Android TV / Google TV', description: 'Talks to a Shield.',
@@ -448,6 +449,27 @@ class FakeApi extends HubApi {
   }
 
   final List<String> entityCalls = [];
+
+  @override
+  Future<List<StateTargetInfo>> deviceReadable(String deviceId) async =>
+      readableTargets[deviceId] ?? [];
+
+  /// What [deviceReadable] hands back per device, settable per test. Empty
+  /// by default -- a device offers nothing to check until a test opts in,
+  /// the same as a backend that never implemented `Readable` would.
+  final Map<String, List<StateTargetInfo>> readableTargets = {};
+
+  @override
+  Future<String> deviceState(String deviceId, String target) async =>
+      stateValues['$deviceId.$target'] ?? 'standby';
+
+  /// What [deviceState] hands back, keyed `"deviceId.target"`.
+  final Map<String, String> stateValues = {};
+
+  @override
+  Future<List<VariableInfo>> variables() async => fakeVariables;
+
+  final List<VariableInfo> fakeVariables = [];
 
   @override
   Future<HubConfig> config() async => saved;
@@ -1298,6 +1320,180 @@ void main() {
     final action = api.saved.scenes.first.bindings['volume_up']!.onPress.last;
     expect(action.command, 'launch_app');
     expect(action.params, {'app': 'com.plexapp.android'});
+  });
+
+  testWidgets('an if action can be built with a condition and a then branch', (tester) async {
+    final api = FakeApi();
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('If'));
+    await tester.pumpAndSettle();
+
+    // Both sides default to "Fixed" -- type a value on each.
+    await tester.enterText(find.widgetWithText(TextField, 'Value').first, 'on');
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Value').last, 'on');
+    await tester.pumpAndSettle();
+
+    // "Then" pushes a full page hosting its own action list -- two nested
+    // reorderable lists do not fit inside this dialog.
+    await tester.tap(find.text('Then'));
+    await tester.pumpAndSettle();
+    expect(find.text('If / Otherwise'), findsOneWidget);
+
+    await tester.tap(find.text('Add').first); // Then's own Add button
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Wait'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Wait'), findsOneWidget);
+
+    await tester.pageBack(); // back to the action dialog
+    await tester.pumpAndSettle();
+    expect(find.textContaining('1 step'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('If '), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final action = api.saved.scenes.first.bindings['volume_up']!.onPress.last;
+    expect(action.type, 'if');
+    expect(action.condition?.left.type, 'literal');
+    expect(action.condition?.left.value, 'on');
+    expect(action.condition?.right?.value, 'on');
+    expect(action.then, hasLength(1));
+    expect(action.then.first.type, 'delay');
+    expect(action.otherwise, isEmpty);
+  });
+
+  testWidgets('a set action stores a literal value under a variable name', (tester) async {
+    final api = FakeApi();
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Remember'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'Variable name'), 'prev_input');
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Value'), 'hdmi1');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Remember'), findsWidgets);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final action = api.saved.scenes.first.bindings['volume_up']!.onPress.last;
+    expect(action.type, 'set');
+    expect(action.varName, 'prev_input');
+    expect(action.value?.type, 'literal');
+    expect(action.value?.value, 'hdmi1');
+  });
+
+  testWidgets('a wait_for action can be built with a condition and a timeout', (tester) async {
+    final api = FakeApi();
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Wait for'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'Value').first, 'on');
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Value').last, 'on');
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Time out after (s)'), '5');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Wait for'), findsWidgets);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final action = api.saved.scenes.first.bindings['volume_up']!.onPress.last;
+    expect(action.type, 'wait_for');
+    expect(action.timeout, 5.0);
+    expect(action.condition?.left.value, 'on');
+    expect(action.condition?.right?.value, 'on');
+  });
+
+  testWidgets('a condition can check a device\'s live state', (tester) async {
+    final api = FakeApi()
+      ..readableTargets['tv'] = [StateTargetInfo(target: 'power', label: 'Power', values: const ['on', 'standby'])]
+      ..stateValues['tv.power'] = 'standby';
+    await openBindingEditor(tester, api);
+
+    await tester.tap(find.text('Add').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('If'));
+    await tester.pumpAndSettle();
+
+    // Left side: switch from "Fixed" to "Device" -- scoped to the left
+    // `ValueEditor` by key, since "Device" is also the outer action-type
+    // selector's own segment label.
+    await tester.tap(find.descendant(
+      of: find.byKey(const ValueKey('condition-left')),
+      matching: find.text('Device'),
+    ));
+    await tester.pumpAndSettle();
+
+    // Pick the device; its one exposed target loads and is read automatically.
+    await tester.tap(find.descendant(
+      of: find.byKey(const ValueKey('condition-left')),
+      matching: find.byType(DropdownButtonFormField<String>),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Living Room TV').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Currently: standby'), findsOneWidget);
+
+    // The right side is still a fixed value -- give it one so Save enables.
+    await tester.enterText(find.widgetWithText(TextField, 'Value'), 'on');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    final action = api.saved.scenes.first.bindings['volume_up']!.onPress.last;
+    expect(action.condition?.left.type, 'state');
+    expect(action.condition?.left.device, 'tv');
+    expect(action.condition?.left.target, 'power');
+    expect(action.condition?.right?.value, 'on');
   });
 
   testWidgets('a scene binds buttons on the picture of the remote', (tester) async {
