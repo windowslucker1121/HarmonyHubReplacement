@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -54,10 +56,20 @@ jobs:
           build_id=$(python -c "import json; print(json.load(open('${manifest_path}'))['build_id'])")
           echo "build_id=${build_id}" >> "$GITHUB_OUTPUT"
 
+      - name: Summarize commits since the previous release
+        id: notes
+        run: |
+          previous_tag=$(git describe --tags --abbrev=0 --exclude="${{ github.ref_name }}" "${{ github.ref_name }}" 2>/dev/null || true)
+          range="${previous_tag:+${previous_tag}..}${{ github.ref_name }}"
+          {
+            echo "## Commits"
+            git log --no-merges --pretty=format:"- %s (%h)" "${range}"
+          } > release-notes.md
+
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" dist/*.tar.gz dist/*.manifest.json \
             --title "${{ github.ref_name }} (${{ steps.manifest.outputs.build_id }})" \
-            --generate-notes
+            --notes-file release-notes.md
